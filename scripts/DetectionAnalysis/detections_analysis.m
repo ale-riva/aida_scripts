@@ -1,9 +1,7 @@
 close all; clc;
 clearvars -except colors log
 
-
-TT = false;
-LID_CAM = true;
+VEHICLE = "serravalle_niguarda";
 
 
 %% Paths
@@ -11,6 +9,7 @@ normal_path = "/home/alessandro/adehome_aida/aida_code/bags";
 scriptDir = fileparts(mfilename('fullpath'));
 addpath(fullfile(scriptDir,'func'));
 addpath(fullfile(scriptDir,'figs'));
+graphics_options;
 
 %% Load Data
 
@@ -41,13 +40,22 @@ x_lim = [0 inf];
 
 %% PARSING
 
-lid_det = load_perception(log);
-ped_det = filter_by_class(lid_det, 0);
-ped_det = build_3d_bbox(ped_det);
+% URDF Parser loading
+urdf_file = fullfile("vehicle_info",VEHICLE,'vehicle_setup.urdf.xacro');
+tree = urdfTree(urdf_file,feval(VEHICLE));
+
+% Vehicle state
 ego = load_vehicle_state(log);
 
+% Detection loading
+lid_det = load_perception(log);
+lid_det = load_perception_map(lid_det,ego,tree);
+ped_det = filter_by_class(lid_det, 0);
+ped_det = build_3d_bbox(ped_det);
+ped_det.frame_id_rel = lid_det.frame_id_rel;
+
 sensors = { ...
-    struct('s', lid_det, 'col', col.lidar,  'name', 'LD'), ...
+    struct('s', ped_det, 'col', col.lidar, 'name', 'LD - Pedestrian'), ...
 };
 %% PLOTTING
 

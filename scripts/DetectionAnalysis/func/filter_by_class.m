@@ -26,8 +26,9 @@ else
 end
 
 % Fields to filter
-fields = {'x_cog', 'y_cog', 'z_cog', 'orientation', ...
-          'height', 'width','length', 'score', 'class', 'stamp'};
+fields = { 'x_map', 'y_map', 'z_map', 'roll_map', 'pitch_map', 'orientation_map', ...
+           'x_cog', 'y_cog', 'z_cog', 'orientation', ...
+           'height', 'width','length', 'score', 'class', 'stamp'};
 
 % Filter and compact each field
 for i = 1:numel(fields)
