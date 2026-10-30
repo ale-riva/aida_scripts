@@ -33,7 +33,7 @@ emptyDetectionStruct = struct( ...
 );
 
 
-sens_stamp_field = "bag_stamp";
+sens_stamp_field = "stamp";
 % sens_stamp_field = "sensor_stamp__tot";
 
 %  LIDAR CLUSTERING DETECTIONS
@@ -65,6 +65,7 @@ if isfield(log,topic)
 
     % Rows are messages; each detection inherits its message timestamp.
     lid_det.stamp = repmat(d.(sens_stamp_field)(:), 1, size(lid_det.x_cog, 2));
+    lid_det.stamp = (lid_det.stamp - log.t0);
     not_valid_idx = isnan(lid_det.x_cog);
     lid_det.stamp(not_valid_idx)=nan;
 else

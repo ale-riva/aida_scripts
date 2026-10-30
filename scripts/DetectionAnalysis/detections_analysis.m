@@ -33,6 +33,8 @@ col.BUS          = colors.purple{2};
 col.BICYCLE      = colors.yellow{2};
 col.MOTORCYCLE   = colors.orange{2};
 
+load_detection_labels;
+
 sz=3; % Marker size
 f=1;
 c = 0;
