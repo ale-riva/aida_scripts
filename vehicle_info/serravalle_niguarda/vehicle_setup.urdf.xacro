@@ -1,0 +1,185 @@
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="vehicle_setup">
+
+
+  <!-- ARGS DECLARATION - DO NOT MODIFY HERE! -->
+
+  <xacro:arg name="lidar_sx_frame_name" default=""/>
+  <xacro:arg name="lidar_dx_frame_name" default=""/>
+  <xacro:arg name="lidar_center_frame_name" default=""/>
+  <xacro:arg name="radar_sx_frame_name" default=""/>
+  <xacro:arg name="radar_dx_frame_name" default=""/>
+  <xacro:arg name="radar_front_frame_name" default=""/>
+  <xacro:arg name="radar_rear_frame_name" default=""/>
+  <xacro:arg name="cam_sx_frame_name" default=""/>
+  <xacro:arg name="cam_dx_frame_name" default=""/>
+  <xacro:arg name="cam_front_frame_name" default=""/>
+  <xacro:arg name="cam_rear_frame_name" default=""/>
+  <xacro:arg name="imu_center_frame_name" default=""/>
+  <xacro:arg name="imu_sx_frame_name" default=""/>
+  <xacro:arg name="imu_dx_frame_name" default=""/>
+  <xacro:arg name="gnss_frame_name" default=""/>
+  <xacro:arg name="base_link_frame_name" default=""/>
+  <xacro:arg name="base_footprint_frame_name" default=""/>
+  <xacro:arg name="front_bumper_frame_name" default=""/>
+  <xacro:arg name="rear_bumper_frame_name" default=""/>
+
+  <xacro:property name="lidar_sx_frame" value="$(arg lidar_sx_frame_name)"/>
+  <xacro:property name="lidar_dx_frame" value="$(arg lidar_dx_frame_name)"/>
+  <xacro:property name="lidar_center_frame" value="$(arg lidar_center_frame_name)"/>
+  <xacro:property name="radar_sx_frame" value="$(arg radar_sx_frame_name)"/>
+  <xacro:property name="radar_dx_frame" value="$(arg radar_dx_frame_name)"/>
+  <xacro:property name="radar_front_frame" value="$(arg radar_front_frame_name)"/>
+  <xacro:property name="radar_rear_frame" value="$(arg radar_rear_frame_name)"/>
+  <xacro:property name="cam_sx_frame" value="$(arg cam_sx_frame_name)"/>
+  <xacro:property name="cam_dx_frame" value="$(arg cam_dx_frame_name)"/>
+  <xacro:property name="cam_front_frame" value="$(arg cam_front_frame_name)"/>
+  <xacro:property name="cam_rear_frame" value="$(arg cam_rear_frame_name)"/>
+  <xacro:property name="imu_center_frame" value="$(arg imu_center_frame_name)"/>
+  <xacro:property name="imu_sx_frame" value="$(arg imu_sx_frame_name)"/>
+  <xacro:property name="imu_dx_frame" value="$(arg imu_dx_frame_name)"/>
+  <xacro:property name="gnss_frame" value="$(arg gnss_frame_name)"/>
+  <xacro:property name="base_link_frame" value="$(arg base_link_frame_name)"/>
+  <xacro:property name="base_footprint_frame" value="$(arg base_footprint_frame_name)"/>
+  <xacro:property name="front_bumper_frame" value="$(arg front_bumper_frame_name)"/>
+  <xacro:property name="rear_bumper_frame" value="$(arg rear_bumper_frame_name)"/>
+
+  <!-- LINKS DECLARATION COMMENT UNUSED LINKS! -->
+
+  <!-- <link name="${lidar_sx_frame}"/> -->
+  <!-- <link name="${lidar_dx_frame}"/> -->
+  <link name="${lidar_center_frame}"/>
+  <link name="${cam_sx_frame}"/> 
+  <link name="${cam_dx_frame}"/>
+  <link name="${cam_front_frame}"/> 
+  <link name="${cam_rear_frame}"/>
+  <link name="${imu_center_frame}"/>
+  <!-- <link name="${imu_sx_frame}"/> -->
+  <!-- <link name="${imu_dx_frame}"/> -->
+  <link name="${gnss_frame}"/>
+  <link name="${base_link_frame}">
+    <visual>
+      <origin xyz="0.0 0.0 -0.25" rpy="1.5708 0.0 1.5708"/>
+      <geometry>
+        <mesh filename="package://vehicle_config/urdf/fiat_500e.stl" scale="0.0275 0.0275 0.0275"/>
+      </geometry>
+      <material name="niulinx_purple">
+        <color rgba="0.369 0.090 0.922 1.0"/>
+      </material>
+    </visual>
+  </link>
+  <link name="${base_footprint_frame}"/>
+  <link name="${front_bumper_frame}"/>
+  <link name="${radar_sx_frame}"/>
+  <link name="${radar_dx_frame}"/>
+  <link name="${radar_front_frame}"/> 
+  <link name="${radar_rear_frame}"/>
+
+
+  <!-- TRANSFORMS, MODIFY BELOW! -->
+  
+  <!-- CAMERA FRONT -->
+
+  <joint name="camera_front_joint" type="fixed">
+    <parent link="${lidar_center_frame}"/>
+    <child link="${cam_front_frame}"/>
+    <origin xyz="0.0361145 0.00675723 -0.12579993" rpy="-1.6123728 0.0062337 -1.5660601"/>
+  </joint>
+
+  <!-- CAMERA RIGHT -->
+
+  <joint name="camera_right_joint" type="fixed">
+    <parent link="${lidar_center_frame}"/>
+    <child link="${cam_dx_frame}"/>
+    <origin xyz="0.02745615 -0.1384093 -0.12593978" rpy="1.53547 -3.14173 0.341665"/>
+  </joint>
+
+  <!-- CAMERA LEFT -->
+
+  <joint name="camera_left_joint" type="fixed">
+    <parent link="${lidar_center_frame}"/>
+    <child link="${cam_sx_frame}"/>
+    <origin xyz="0.02489764 0.14215496 -0.13092639" rpy="1.53974 -3.1461 2.7928"/>
+  </joint>
+
+  <!-- CAMERA REAR from SERRAVALLE NOT CHECKED -->
+
+  <joint name="camera_rear_joint" type="fixed">
+    <parent link="${lidar_center_frame}"/>
+    <child link="${cam_rear_frame}"/>
+    <origin xyz="0.19872818 0.02462186 -0.47651643" rpy="2.662033626564573 1.506678223169351 1.0977248086885436"/>
+  </joint>
+
+  <!-- LIDAR FRONT -->
+
+  <joint name="lidar_center_joint" type="fixed">
+    <parent link="${base_link_frame}"/>
+    <child link="${lidar_center_frame}"/>
+    <origin xyz="0.0 0.0 1.5" rpy="0.0 0.0 0.0"/>
+  </joint>
+
+  <!-- MAIN IMU -->
+
+  <joint name="imu_center_joint" type="fixed">
+    <parent link="${base_link_frame}"/>
+    <child link="${imu_center_frame}"/>
+    <origin xyz="-1.5 0.0 0.57" rpy="3.14158 0.0 3.14158"/>
+  </joint>
+
+
+  <!-- GNSS SENSOR -->
+
+  <joint name="gnss_joint" type="fixed">
+    <parent link="${imu_center_frame}"/>
+    <child link="${gnss_frame}"/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+  </joint>
+
+  <!-- RADAR FRONT -->
+
+  <joint name="radar_front_joint" type="fixed">
+    <parent link="${base_link_frame}"/>
+    <child link="${radar_front_frame}"/>
+    <origin xyz="1.779122 0.134074 0.0" rpy="3.14158 0.002860 -0.012759"/>
+  </joint>
+
+  <!-- RADAR LEFT -->
+
+  <joint name="radar_left_joint" type="fixed">
+    <parent link="${base_link_frame}"/>
+    <child link="${radar_sx_frame}"/>
+    <origin xyz="0.0 0.55 1.5" rpy="3.14158 0.0 1.571"/>
+  </joint>
+
+  <!-- RADAR RIGHT -->
+
+  <joint name="radar_right_joint" type="fixed">
+    <parent link="${lidar_center_frame}"/>
+    <child link="${radar_dx_frame}"/>
+    <origin xyz="0.125001 -0.482804 -1.56258" rpy="-0.012651 -0.00815897 -1.59237"/>
+  </joint>
+
+  <!-- RADAR REAR -->
+
+  <joint name="radar_rear_joint" type="fixed">
+    <parent link="${base_link_frame}"/> 
+    <child link="${radar_rear_frame}"/>
+    <origin xyz="-1.592819 -0.025186 0.0" rpy="0.00659 -0.009873 3.130764"/>
+  </joint>
+
+  <!-- FRONT BUMPER -->
+
+  <joint name="front_bumper_joint" type="fixed">
+    <parent link="${base_link_frame}"/>
+    <child link="${front_bumper_frame}"/>
+    <origin xyz="1.78 0.0 0.0" rpy="0.0 0.0 0.0"/>
+  </joint>
+
+  <!-- BASE FOOTPRINT -->
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="${base_link_frame}"/>
+    <child link="${base_footprint_frame}"/>
+    <origin xyz="0.0 0.0 -0.4" rpy="0.0 0.0 0.0"/>
+  </joint>
+
+</robot>
