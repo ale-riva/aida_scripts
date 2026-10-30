@@ -59,13 +59,5 @@ sensors = { ...
 };
 %% PLOTTING
 
-figure; hold on; axis equal
-% plot3(ego.x, ego.y, ego.z);
-idx =1;
-% Each column contains the wireframe of one detection in this message.
-X = reshape(permute(ped_det.bbox.x(idx, :, :), [3 2 1]), size(ped_det.bbox.x, 3), []);
-Y = reshape(permute(ped_det.bbox.y(idx, :, :), [3 2 1]), size(ped_det.bbox.y, 3), []);
-Z = reshape(permute(ped_det.bbox.z(idx, :, :), [3 2 1]), size(ped_det.bbox.z, 3), []);
-plot3(X, Y, Z, 'b-', 'LineWidth', 1.5);
-view(3);
+map;
 link_axes();

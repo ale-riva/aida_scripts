@@ -1,0 +1,29 @@
+
+
+% Draw Full path
+figure("Name","MAP",'NumberTitle','off')
+hold on; axis equal;
+xlabel("X [m]")
+ylabel("Y [m]")
+plot(ego.x,ego.y,'LineWidth',0.3,'Color',[0.5 0.5 0.5],'DisplayName','Ego')
+t1_start = 0;
+% idx = 100; % Detection message to display.
+
+ % --- sensor detections ---
+for i = 1:numel(sensors)
+    s = sensors{i}.s;
+
+    valid = ...
+        isfinite(s.stamp) & ...
+        isfinite(s.x_map) & ...
+        isfinite(s.y_map);
+
+    plot( ...
+        s.x_map(valid), ...
+        s.y_map(valid), ...
+        '.', ...
+        'MarkerSize', 20, ...
+        'Color', sensors{i}.col, ...
+        'DisplayName', sensors{i}.name);
+end
+legend show
