@@ -19,20 +19,20 @@ if (~exist('log','var'))
     log = load(fullfile(path,file));
 end
 name1 = 'new';
+load_detection_labels;
 
 
 DateTime = datetime(log.t0,'ConvertFrom','epochtime','TicksPerSecond',1e9,'Format','dd-MMM-yyyy HH:mm:ss');
 
 %% NAMING
 graphics_options;
-col.lidar   = colors.green{2};
-col.pp      = colors.green{3};
-col.radar   = [77 190 238] / 255;
-col.conly  = colors.yellow{2};
-col.cenh  = colors.orange{2};
-col.cenh2   = [1 0 1]; % magenta
-col.conly2   = [0.5 0 0.5]; % purple
-col.ref     = colors.black;
+col.PEDESTRIAN   = colors.blue{2};
+col.CAR          = colors.green{2};
+col.TRUCK        = colors.green{3};
+col.BUS          = colors.purple{2};
+col.BICYCLE      = colors.yellow{2};
+col.MOTORCYCLE   = colors.orange{2};
+
 sz=3; % Marker size
 f=1;
 c = 0;
@@ -41,7 +41,7 @@ x_lim = [0 inf];
 %% PARSING
 
 % URDF Parser loading
-urdf_file = fullfile("vehicle_info",VEHICLE,'vehicle_setup.urdf.xacro');
+urdf_file = fullfile("consts", "vehicle_info",VEHICLE,'vehicle_setup.urdf.xacro');
 tree = urdfTree(urdf_file,feval(VEHICLE));
 
 % Vehicle state
@@ -55,7 +55,7 @@ ped_det = build_3d_bbox(ped_det);
 ped_det.frame_id_rel = lid_det.frame_id_rel;
 
 sensors = { ...
-    struct('s', ped_det, 'col', col.lidar, 'name', 'LD - Pedestrian'), ...
+    struct('s', lid_det, 'name', 'LD'), ...
 };
 %% PLOTTING
 
