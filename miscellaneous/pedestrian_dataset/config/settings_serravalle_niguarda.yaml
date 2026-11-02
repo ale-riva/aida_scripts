@@ -1,5 +1,5 @@
 # ==============================================================================
-# Sensor settings: EVA  (7 cameras, 3 LiDARs)
+# Sensor settings: Serravalle/Niguarda (3 cameras, 1 LiDAR)
 # This file defines sensor topics, frame IDs, and the calibration reference frame.
 # It is loaded automatically by the pipeline when config.yaml references it.
 # ==============================================================================
@@ -7,7 +7,7 @@
 # All sensor-to-sensor transforms are expressed relative to this frame.
 reference_frame: "ekf"
 
-# LiDAR order matters: lidar_front is the reference used for timestamp matching.
+# LiDAR keys name the output folders and CSV columns; the first is the timestamp reference.
 lidars:
   lidar_center:
     topic: "/ouster_sensor_center/points"

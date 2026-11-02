@@ -97,7 +97,7 @@ def run_stage1(config) -> str:
     stage1_out = os.path.join(config.output_base_dir, stem)
     tolerance_ms = config.matching.tolerance_ms
     sampling_interval_ms = config.matching.sampling_interval_ms
-    ref_key = config.lidars[0].key  # lidar_front is always the reference
+    ref_key = config.lidars[0].key  # first LiDAR listed in the settings file
 
     logger.info(">>> STAGE 1")
     logger.info("BAG folder  : %s  (%d files, .%s)", bag_dir, len(files), ext)
@@ -120,7 +120,11 @@ def run_stage1(config) -> str:
         logger.info("Reading timestamps from %s ...", fname)
 
         for lidar in config.lidars:
-            ts = parser.get_message_timestamps(lidar.topic)
+            try:
+                ts = parser.get_message_timestamps(lidar.topic)
+            except KeyError:
+                logger.warning("LiDAR topic '%s' is absent from %s.", lidar.topic, fname)
+                ts = []
             all_lidar_ts[lidar.key].extend(ts)
             # Record the time span of the reference LiDAR in this file
             if lidar.key == ref_key and ts:

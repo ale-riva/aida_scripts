@@ -4,7 +4,7 @@ Format:
     lidar_front,lidar_left,lidar_right,camera_0,camera_1,...,camera_6
     <ts>,       <ts>,      <ts>,       <ts>,    <ts>,    ...,<ts>      <- absent cameras = empty cell
 
-Column names and order are derived directly from the SampleGroup keys (sorted).
+LiDAR columns preserve settings order; camera columns keep their sorted order.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ def write_csv(groups: List[SampleGroup], out_path: str) -> None:
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    lidar_cols  = sorted(groups[0].lidar_timestamps.keys())
+    lidar_cols  = list(groups[0].lidar_timestamps)
     camera_cols = sorted(groups[0].camera_timestamps.keys())
     header = lidar_cols + camera_cols
 

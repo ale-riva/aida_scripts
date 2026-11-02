@@ -25,12 +25,6 @@ from utils.image_utils import (
     optimal_undistorted_K as _optimal_undistorted_K,
 )
 
-_LIDAR_SENSORS = [
-    "lidar_front",
-    "lidar_left",
-    "lidar_right",
-]
-
 _SCRIPT_DIR = Path(__file__).resolve().parent
 
 def parse_args() -> argparse.Namespace:
@@ -88,18 +82,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def validate_dataset_root(dataset_root: Path) -> None:
+def validate_dataset_root(dataset_root: Path, lidar_keys: List[str], headers: List[str]) -> None:
     required_paths = [
         dataset_root / "samples",
-        dataset_root / "samples" / "lidar_front",
-        dataset_root / "samples" / "lidar_left",
-        dataset_root / "samples" / "lidar_right",
+        *(dataset_root / "samples" / key for key in lidar_keys),
         dataset_root / "timestamps.csv",
     ]
 
     for path in required_paths:
         if not path.exists():
             raise FileNotFoundError(f"Required path not found: {path}")
+
+    missing_columns = [key for key in lidar_keys if key not in headers]
+    if missing_columns:
+        raise ValueError(f"Missing configured LiDAR columns in timestamps.csv: {missing_columns}")
 
 
 def create_ls_lidar_dirs(dataset_root: Path) -> tuple[Path, Path, Path]:
@@ -127,7 +123,13 @@ def create_ls_camera_dirs(dataset_root: Path, camera_names: List[str]) -> tuple[
     return labelling_session_dir, output_camera_dirs, output_calibrations_dir
 
 
-def load_camera_name_map(car_name: str) -> dict[str, str]:
+def load_sensor_settings(car_name: str) -> dict:
+    sensor_yaml_path = _SCRIPT_DIR / "config" / f"settings_{car_name}.yaml"
+    with sensor_yaml_path.open("r") as f:
+        return yaml.safe_load(f)
+
+
+def load_camera_name_map(car_name: str, settings: dict | None = None) -> dict[str, str]:
     """
     Load a sensor settings YAML file and return a dictionary:
 
@@ -138,9 +140,7 @@ def load_camera_name_map(car_name: str) -> dict[str, str]:
         }
     """
     
-    sensor_yaml_path = _SCRIPT_DIR / "config" / f"settings_{car_name}.yaml"
-    with sensor_yaml_path.open("r") as f:
-        data = yaml.safe_load(f)
+    data = load_sensor_settings(car_name) if settings is None else settings
     cameras = data.get("cameras", {})
     camera_name_map: dict[str, str] = {}
     for camera_key, camera_cfg in cameras.items():
@@ -152,6 +152,18 @@ def load_camera_name_map(car_name: str) -> dict[str, str]:
         camera_name_map[camera_key] = camera_name
 
     return camera_name_map
+
+
+def resolve_lidar_extrinsics(lidars: dict, extrinsics: dict) -> dict:
+    """Map configured sample keys to their calibrated sensor-frame transforms."""
+    lidar_extrinsics = {}
+    for key, lidar in lidars.items():
+        transform = extrinsics.get(lidar.get("frame_id", key))
+        if transform is None:
+            transform = extrinsics.get(key)
+        if transform is not None:
+            lidar_extrinsics[key] = transform
+    return lidar_extrinsics
 
 def add_annotator_to_label(
     input_label_path: Path,
@@ -185,8 +197,7 @@ def add_annotator_to_label(
     with output_label_path.open("w") as f:
         json.dump(label_data, f, indent=2)
 
-def write_camera(dataset_root, cam_key: str, row:dict, intr:dict, out_dir:Path)->None:
-    ref_stem = row['lidar_front']
+def write_camera(dataset_root, cam_key: str, row:dict, intr:dict, out_dir:Path, ref_stem: str)->None:
     cam_stem = row[cam_key]
     src = os.path.join(dataset_root, "samples", cam_key, f"{cam_stem}.png")
     if not os.path.isfile(src):
@@ -302,7 +313,14 @@ def main() -> None:
     args = parse_args()
 
     dataset_root: Path = args.dataset_root.resolve()
-    validate_dataset_root(dataset_root)
+    settings = load_sensor_settings(args.car_name)
+    lidars = settings.get("lidars", {})
+    if not lidars:
+        raise ValueError("Settings: at least one lidar must be defined")
+    lidar_keys = list(lidars)
+    ref_key = lidar_keys[0]
+    headers, timestamp_rows = _load_timestamps_csv(dataset_root)
+    validate_dataset_root(dataset_root, lidar_keys, headers)
 
     # Resolve input labels directory
     input_labels_dir = args.labels_dir
@@ -315,12 +333,12 @@ def main() -> None:
         raise FileNotFoundError(f"Input labels directory not found: {input_labels_dir}")
     
     # Load camera name mapping
-    camera_map = load_camera_name_map(args.car_name)
+    camera_map = load_camera_name_map(args.car_name, settings)
 
     # Load stage1 info
-    headers, timestamp_rows = _load_timestamps_csv(dataset_root)
     calibration = _load_calibration(dataset_root)
     extrinsics = calibration.get("extrinsics", {})
+    lidar_extrinsics = resolve_lidar_extrinsics(lidars, extrinsics)
     intrinsics = calibration.get("intrinsics", {})
 
     # Compute cam
@@ -339,14 +357,17 @@ def main() -> None:
     n_frames = len(timestamp_rows)
 
     for row in tqdm(timestamp_rows, total=n_frames):
-        ref_stem = row["lidar_front"]
+        ref_stem = row[ref_key].strip()
+        if not ref_stem:
+            logger.warning("[LabSes] Missing reference timestamp for %s - skipping frame.", ref_key)
+            continue
         output_pcd_path = output_lidar_dir / f"{ref_stem}.pcd"
 
         # merge pointclouds
         if output_pcd_path.is_file() and not args.overwrite:
             logger.warning("Skipping existing lidar %s:" ,output_pcd_path)
         else:
-            merged = _merge_and_transform(row, _LIDAR_SENSORS, dataset_root, extrinsics, to_xyz_bin)
+            merged = _merge_and_transform(row, lidar_keys, dataset_root, lidar_extrinsics, to_xyz_bin)
             if len(merged) == 0:
                 logger.warning("[LabelSes] Empty merged point cloud written to: %s", output_pcd_path)
             _write_pcd(output_pcd_path, merged)
@@ -362,7 +383,7 @@ def main() -> None:
                 if out_cam_path.exists() and not args.overwrite:
                     logger.warning("Skipping existing cam %s:" ,output_pcd_path)
                 else:
-                    write_camera(dataset_root, cam_key, row, intrinsics[camera_map[cam_key]], out_cam_dir)
+                    write_camera(dataset_root, cam_key, row, intrinsics[camera_map[cam_key]], out_cam_dir, ref_stem)
 
     print("Done.")
 

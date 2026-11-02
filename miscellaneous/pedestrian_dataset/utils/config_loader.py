@@ -22,7 +22,7 @@ import yaml
 
 @dataclass
 class LidarConfig:
-    key: str            # logical name used in CSV headers: lidar_front, lidar_left, lidar_right
+    key: str            # logical name from settings, used in CSV headers and samples/
     topic: str
     frame_id: str
 
@@ -54,6 +54,7 @@ class ClusterConfig:
     ego_pose: EgoPoseConfig
     ego_pose_tolerance_ms: float
     target_classes: Optional[List[int]] = None
+    lidar_key: str = "lidar"
 
 
 @dataclass
@@ -165,14 +166,16 @@ def load_cluster_config(yaml_path: str) -> ClusterConfig:
         settings, _ = _load_vehicle_settings(raw, yaml_path)
 
     lidar_topic = inp.get("lidar_topic")
-    if lidar_topic is None and settings:
+    lidar_key = inp.get("lidar_key", "lidar")
+    if settings:
         lidars = _require(settings, "lidars", "settings")
         if not lidars:
             raise ValueError("Settings: at least one lidar must be defined")
-        lidar_key = inp.get("lidar_key", sorted(lidars)[0])
+        lidar_key = inp.get("lidar_key", next(iter(lidars)))
         if lidar_key not in lidars:
             raise ValueError(f"Config: unknown input.lidar_key '{lidar_key}'. Available: {sorted(lidars)}")
-        lidar_topic = _require(lidars[lidar_key], "topic", f"lidars.{lidar_key}")
+        if lidar_topic is None:
+            lidar_topic = _require(lidars[lidar_key], "topic", f"lidars.{lidar_key}")
     if lidar_topic is None:
         lidar_topic = _require(inp, "lidar_topic", "input")
 
@@ -196,6 +199,7 @@ def load_cluster_config(yaml_path: str) -> ClusterConfig:
         ),
         ego_pose_tolerance_ms=ego_pose_tolerance_ms,
         target_classes=target_classes,
+        lidar_key=lidar_key,
     )
 
 
@@ -280,7 +284,7 @@ def _parse(raw: dict, settings: dict, yaml_path: str, settings_path: str) -> Pip
     ## LiDARs
     lidars_raw = _require(settings, "lidars", f"settings ({settings_path})")
     lidars: List[LidarConfig] = []
-    for key in sorted(lidars_raw.keys()):
+    for key in lidars_raw:
         entry = lidars_raw[key]
         lidars.append(LidarConfig(
             key=key,

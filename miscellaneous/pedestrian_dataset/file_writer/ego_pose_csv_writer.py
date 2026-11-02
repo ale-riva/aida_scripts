@@ -5,7 +5,7 @@ Schema
 header, x, y, z, roll, pitch, yaw
 
 header           : canonical filename timestamp of the reference LiDAR frame
-                   (<YYYYMMDD_HHMMSS_ns> identical to the .pcd stem for lidar_front)
+                   (<YYYYMMDD_HHMMSS_ns> identical to the reference sensor's .pcd stem)
 x, y, z          : ego translation in metres, expressed in the world frame
 roll, pitch, yaw : intrinsic XYZ Euler angles in radians, derived from the pose quaternion
 """
@@ -37,7 +37,7 @@ def write_ego_pose_csv(
     Parameters
     groups     : matched sample groups (one per row)
     ego_poses  : one pose dict (x, y, z, roll, pitch, yaw) or "None" per group
-    ref_key    : logical key of the reference LiDAR ("lidar_front")
+    ref_key    : logical key of the reference LiDAR (first in settings)
     out_path   : absolute path for the output "ego_poses.csv" file
     """
     if not groups:

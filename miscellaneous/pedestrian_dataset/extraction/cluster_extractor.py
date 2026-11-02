@@ -1,6 +1,6 @@
 """
 Extract detection-matched full clouds or clusters, with Stage-1 3-D labels.
-Output paths: samples/lidar/<timestamp>.pcd or clusters/<class_id>/<timestamp>_<detection_id>.pcd.
+Output paths: samples/<lidar_key>/<timestamp>.pcd or clusters/<class_id>/<timestamp>_<detection_id>.pcd.
 
 Matching uses message header.stamp; exported frames use cloud header.stamp. The first pass
 indexes clouds and retains detections and ego poses; the second streams clouds.
@@ -195,7 +195,7 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
                     detection_msg.count = len(detections)
                     written += extract_detection_clusters(cloud_msg, detection_msg, timestamp_ns, stage1_out, config.on_existing)
                 else:
-                    written += _write_lidar_sample(cloud_msg, timestamp_ns, stage1_out, config.on_existing)
+                    written += _write_lidar_sample(cloud_msg, timestamp_ns, stage1_out, config.on_existing, config.lidar_key)
                 write_detection_labels(detections, timestamp_ns, stage1_out, config.on_existing)
                 frame_confidences[timestamp_ns] = {int(detection.box_id): float(detection.score) for detection, _ in detections}
                 del cloud_msg
@@ -206,7 +206,7 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
         finally:
             del parser
 
-    ref_key = "lidar"
+    ref_key = config.lidar_key
     groups = [SampleGroup(lidar_timestamps={ref_key: ts}, camera_timestamps={}) for ts in sorted(frame_confidences)]
     ego_pose_results = [
         find_ego_pose_at(ts, all_ego_ts, all_ego_data, config.ego_pose_tolerance_ms)
@@ -258,8 +258,8 @@ def _frame_detections(matches, cloud_timestamp: int, target_classes):
     return [(selected[detection_id][1], selected[detection_id][2]) for detection_id in sorted(selected)]
 
 
-def _write_lidar_sample(cloud_msg, timestamp_ns: int, output_dir: str, on_existing: str) -> bool:
-    out_path = build_lidar_output_path(output_dir, "", "lidar", timestamp_ns)
+def _write_lidar_sample(cloud_msg, timestamp_ns: int, output_dir: str, on_existing: str, lidar_key: str = "lidar") -> bool:
+    out_path = build_lidar_output_path(output_dir, "", lidar_key, timestamp_ns)
     if os.path.exists(out_path):
         if on_existing == "skip":
             return False

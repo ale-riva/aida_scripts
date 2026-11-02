@@ -25,7 +25,7 @@ class SampleGroup:
     One matched sample group: one timestamp per sensor.
     A None value means the sensor was absent (optional camera slot).
     """
-    lidar_timestamps: Dict[str, int]             # {"lidar_front": ts_ns, "lidar_left": ts_ns, ...}
+    lidar_timestamps: Dict[str, int]             # configured LiDAR keys, in settings order
     camera_timestamps: Dict[str, Optional[int]]  # {"camera_0": ts_ns, ..., "camera_6": None}
 
 
@@ -63,26 +63,30 @@ def match_timestamps(
     Produce a list of temporally-aligned sample groups sampled at a fixed interval.
 
     Algorithm:
-    1. Use lidar_front timestamps as the reference.
-    2. Starting from the first lidar_front timestamp, search for a valid group:
+    1. Use the first configured LiDAR's timestamps as the reference.
+    2. Starting from its first timestamp, search for a valid group:
        a. For every present camera, find the closest timestamp within (+-)tolerance_ms.
-       b. For lidar_left / lidar_right, find the closest timestamp within (+-)tolerance_ms.
+       b. For every other LiDAR, find the closest timestamp within (+-)tolerance_ms.
        c. If ALL present sensors have a match -> record the group.
-       d. Otherwise advance to the next lidar_front timestamp and retry.
+       d. Otherwise advance to the next reference timestamp and retry.
     3. Once a valid group is found, jump forward by "sampling_interval_ms" and repeat
-       from the nearest lidar_front timestamp at or after that point.
+       from the nearest reference timestamp at or after that point.
 
     Returns: List[SampleGroup]
     """
-    lidar_keys = sorted(lidar_timestamps.keys())    # ["lidar_front", "lidar_left", "lidar_right"]
+    lidar_keys = list(lidar_timestamps)  # preserve settings order; index 0 is the reference
     camera_keys = sorted(camera_timestamps.keys())  # ["camera_0", ..., "camera_6"]
 
-    ref_key = lidar_keys[0]  # lidar_front is always the reference
-    ref_ts = np.array(lidar_timestamps[ref_key], dtype=np.int64)
-
-    if len(ref_ts) == 0:
-        logger.warning("Reference LiDAR (%s) has no timestamps. Returning empty list.", ref_key)
+    if not lidar_keys:
+        logger.warning("No LiDARs configured. Returning empty list.")
         return []
+    empty_lidars = [key for key in lidar_keys if not len(lidar_timestamps[key])]
+    if empty_lidars:
+        logger.warning("Configured LiDAR(s) have no timestamps: %s. Returning empty list.", empty_lidars)
+        return []
+
+    ref_key = lidar_keys[0]
+    ref_ts = np.array(lidar_timestamps[ref_key], dtype=np.int64)
 
     # Pre-convert all other sensors to numpy arrays for fast lookup
     other_lidar_arrays = {k: np.array(lidar_timestamps[k],  dtype=np.int64) for k in lidar_keys[1:]}
@@ -109,7 +113,7 @@ def match_timestamps(
             ref_idx += 1
             continue
 
-        ref_t = int(ref_ts[ref_idx]) # current reference timestamp (lidar_front), in ns
+        ref_t = int(ref_ts[ref_idx]) # current reference timestamp, in ns
 
         ## Try to match every present camera
         cam_match: Dict[str, Optional[int]] = {}
