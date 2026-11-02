@@ -7,3 +7,6 @@
 *.pyc
 __pycache__
 
+
+miscellaneous/lidar_camera_annotator/.sus
+
