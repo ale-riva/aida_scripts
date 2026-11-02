@@ -1,6 +1,6 @@
 [submodule "third_party/MATLAB-graphic-tools"]
 	path = plots/third_party/MATLAB-graphic-tools
 	url = git@github.com:JackDelcaro/MATLAB-graphic-tools.git
-[submodule "miscellaneous/SUSTechPOINTS"]
-	path = miscellaneous/SUSTechPOINTS
+[submodule "miscellaneous/lidar_camera_annotator/SUSTechPOINTS"]
+	path = miscellaneous/lidar_camera_annotator/SUSTechPOINTS
 	url = git@gitlab.com:move-devs/polimove/polimove_nn_models/SUSTechPOINTS.git
