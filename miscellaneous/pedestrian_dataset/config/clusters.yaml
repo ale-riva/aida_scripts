@@ -1,0 +1,18 @@
+# Minimal configuration for: python main.py --config config/clusters.yaml --clusters
+input:
+  bag_dir: "/mnt/storage/AIDA/bags/2026-10-19/2026-10-19_16-24-06_normal"  # bag folder or a single .mcap / .db3 file
+  lidar_key: "lidar_center"  # entry in the settings file's lidars section
+  detection_topic: "/perception/multimodal_3d_detections"
+
+vehicle:
+  settings: "settings_serravalle_niguarda.yaml"  # relative to this config file
+
+output:
+  base_dir: "/mnt/storage/AIDA/bags/2026-10-19/2026-10-19_16-24-06_normal/out_clusters"
+  on_existing: "skip"  # skip | overwrite | abort
+
+matching:
+  target_classes: [0]  # meas_class IDs; omit/null for all classes, [] for none
+  tolerance_ms: 5.0  # maximum difference between cloud and detection header.stamp
+  ego_pose_tolerance_ms: 5.0  # nearest-pose fallback beyond this tolerance, as in Stage 1
+

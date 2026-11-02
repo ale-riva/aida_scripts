@@ -43,16 +43,18 @@ def load_ego_poses_from_parser(
     Both arrays are sorted by "ts_arr".  Returns empty arrays when no
     matching transforms are found.
     """
-    # Use the bag-level publish timestamps as a bounding window for the query.
-    all_ts = parser.get_message_timestamps(topic)
-    if not all_ts:
+    # SQLite raises for an absent topic; MCAP handles it with an empty result.
+    if not hasattr(parser, "reader") and topic not in parser.topic_id:
         logger.warning("Topic '%s' has no messages in this parser - skipping.", topic)
         return np.array([], dtype=np.int64), np.zeros((0, 7), dtype=np.float64)
 
+    # Read the whole topic: MCAP query windows use log time, while its timestamp
+    # method returns publish time. This also includes the final TF message despite
+    # MCAP's exclusive end bound. Pose matching below uses transform header stamps.
     messages = parser.get_messages(
         topics=topic,
-        start_time=min(all_ts),
-        end_time=max(all_ts),
+        start_time=0,
+        end_time=int(np.iinfo(np.int64).max),
     )
 
     ts_list: List[int] = []

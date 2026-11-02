@@ -1,6 +1,7 @@
 from pathlib import Path
 import struct
 import math
+from types import SimpleNamespace
 from typing import (
     IO,
     Any,
@@ -13,7 +14,10 @@ from typing import (
     Optional,
     Tuple,
 )
-from mcap.reader import make_reader
+try:
+    from mcap.reader import make_reader
+except ImportError:
+    make_reader = None
 from rosidl_runtime_py.utilities import get_message
 from rclpy.serialization import deserialize_message
 import rosbag2_py
@@ -106,13 +110,79 @@ def read_points(cloud, field_names=None, skip_nans=False, uvs=[]):
 
 
 #######################################################################################################
+class _Rosbag2Reader:
+    """Expose the MCAP iteration interface through ROS 2's MCAP storage plugin.
+
+    Humble's read_next() exposes recording time only, so publish_time falls
+    back to log_time. Iteration follows the native reader's timestamp order;
+    log_time_order is retained for API compatibility. Reverse reads buffer
+    only the requested topic/time window.
+    """
+
+    def __init__(self, path: Path):
+        self._reader = rosbag2_py.SequentialReader()
+        self._reader.open(
+            rosbag2_py.StorageOptions(uri=str(path), storage_id="mcap"),
+            rosbag2_py.ConverterOptions("", ""),
+        )
+        self._schemas = {}
+        self._channels = {}
+        for index, topic in enumerate(self._reader.get_all_topics_and_types(), 1):
+            self._schemas[topic.name] = SimpleNamespace(id=index, name=topic.type)
+            self._channels[topic.name] = SimpleNamespace(
+                id=index, topic=topic.name, schema_id=index, message_encoding="cdr",
+            )
+
+    def get_summary(self):
+        return SimpleNamespace(
+            channels={channel.id: channel for channel in self._channels.values()},
+            schemas={schema.id: schema for schema in self._schemas.values()},
+        )
+
+    def iter_messages(self, topics=None, start_time=None, end_time=None,
+                      log_time_order=True, reverse=False):
+        if isinstance(topics, str):
+            topics = [topics]
+        elif topics is not None:
+            topics = list(topics)
+        if topics is not None:
+            if not topics:
+                return
+            self._reader.set_filter(rosbag2_py.StorageFilter(topics=topics))
+        else:
+            self._reader.reset_filter()
+        self._reader.seek(0 if start_time is None else int(start_time))
+
+        buffered = []
+        while self._reader.has_next():
+            topic, payload, timestamp = self._reader.read_next()
+            if end_time is not None and timestamp >= end_time:
+                break
+            if start_time is not None and timestamp < start_time:
+                continue
+            channel = self._channels[topic]
+            message = SimpleNamespace(
+                channel_id=channel.id, data=payload,
+                log_time=timestamp, publish_time=timestamp,
+            )
+            record = (self._schemas[topic], channel, message)
+            if reverse:
+                buffered.append(record)
+            else:
+                yield record
+        if reverse:
+            yield from reversed(buffered)
+
+
 class MCAPBagFileParser:
     """
     Minimal MCAP analog of your sqlite-backed BagFileParser.
 
     Notes:
       * Pass the path to a single `.mcap` file (not a directory).
-      * Timestamps are returned as MCAP log_time nanoseconds (int).
+      * Uses the Python mcap reader when available, otherwise rosbag2_py.
+      * Query windows use log_time; returned timestamps use publish_time with
+        the Python backend, or recording time with rosbag2_py on Humble.
       * Message decoding uses ROS 2 CDR -> Python via rosidl/rclpy, same as your db3 parser.
     """
 
@@ -122,9 +192,13 @@ class MCAPBagFileParser:
             raise FileNotFoundError(f"No such file: {self._path}")
         if self._path.is_dir():
             raise ValueError(f"Expected an .mcap file, got directory: {self._path}")
-        # open once and keep a seeking reader around (efficient, supports multiple iterations)
-        self._fh = open(self._path, "rb")
-        self.reader = make_reader(self._fh)
+        # Keep the same reader interface with either MCAP backend.
+        self._fh = None
+        if make_reader is not None:
+            self._fh = open(self._path, "rb")
+            self.reader = make_reader(self._fh)
+        else:
+            self.reader = _Rosbag2Reader(self._path)
 
         # Public attributes to mirror your sqlite-based parser
         self.topic_type = {}         # {topic_name: "pkg/msg/Type"}
@@ -193,7 +267,7 @@ class MCAPBagFileParser:
         out: List[Tuple[int, object]] = []
         # iter_messages returns (schema, channel, message); message.data is raw CDR bytes; message.log_time is ns int
         for schema, channel, message in self.reader.iter_messages(topics=topics,start_time=start_time,end_time=end_time,log_time_order=log_time_order, reverse=reverse):
-            decoded = self._decode(topics, getattr(schema, "name", None), message.data)
+            decoded = self._decode(channel.topic, getattr(schema, "name", None), message.data)
             if decoded is not None:
                 out.append((message.publish_time, decoded))
         return out
@@ -234,6 +308,7 @@ class MCAPBagFileParser:
 
     # Given an iterable of timestamps, return [(timestamp, message), ...] in the same order
     def get_messages_based_on_ts(self, topic_name: str, ts_list: Iterable[int]) -> List[Tuple[int, object]]:
+        ts_list = [int(ts) for ts in ts_list]
         ts_needed = {int(ts) for ts in ts_list}
         results: dict[int, object] = {}
         # Walk through messages once, capture the first occurrence of each requested timestamp

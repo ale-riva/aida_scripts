@@ -5,6 +5,7 @@ Stage 2:  intermediate -> KITTI / nuScenes / Waymo  (format conversion)
 Usage
     python main.py --config config/config_eva.yaml
     python main.py --config config/config_minerva.yaml --stage 1
+    python main.py --config config/clusters.yaml --clusters
 """
 
 from __future__ import annotations
@@ -18,18 +19,17 @@ import time
 
 import numpy as np
 
-from utils.config_loader import load_config, resolve_kitti_cameras
+from utils.config_loader import load_config, load_cluster_config, resolve_kitti_cameras
 from bag_reader import make_parser
 from timestamp_matching.matcher import match_timestamps
-from extraction.lidar_extractor import (extract_lidar_frame,  build_lidar_output_path)
-from extraction.camera_extractor import (extract_camera_frame, build_camera_output_path)
+from extraction.lidar_extractor import extract_lidar_frame, build_lidar_output_path
+from extraction.camera_extractor import extract_camera_frame, build_camera_output_path
 from extraction.calibration_extractor import extract_calibration
 from extraction.ego_pose_extractor import load_ego_poses_from_parser, find_ego_pose_at
 from extraction.inspection_metadata_writer import write_inspection_config
 from file_writer.csv_writer import write_csv
 from file_writer.metadata_writer import write_metadata
 from file_writer.ego_pose_csv_writer import write_ego_pose_csv
-from converters import get_converter
 
 os.environ['TZ'] = 'Europe/Rome'
 time.tzset()
@@ -276,6 +276,8 @@ def run_stage2(config, stage1_dir: str) -> None:
     """
     Execute Stage 2: convert the Stage-1 intermediate data to each requested output format.
     """
+    from converters import get_converter
+
     logger.info(">>> STAGE 2")
 
     for fmt in config.output_formats:
@@ -294,6 +296,10 @@ def run_stage2(config, stage1_dir: str) -> None:
 def _parse_args():
     parser = argparse.ArgumentParser(description="bag_to_fusion_dataset: BAG -> KITTI / nuScenes / Waymo")
     parser.add_argument("--config", required=True, help="Path to the YAML config file")
+    parser.add_argument(
+        "--clusters", action="store_true",
+        help="Extract detection-box point clouds using the minimal cluster config",
+    )
     parser.add_argument("--stage", type=int, choices=[1, 2, 12], default=12, help="Which stage(s) to run: 1, 2, or 12 (both). Default: 12")
     parser.add_argument(
         "--cameras", nargs="+", default=None, metavar="CAMERA_KEY",
@@ -306,6 +312,24 @@ def _parse_args():
 
 def main():
     args   = _parse_args()
+    if args.clusters:
+        from extraction.cluster_extractor import run_cluster_extraction
+
+        config = load_cluster_config(args.config)
+        if os.path.isfile(config.bag_dir):
+            files = [config.bag_dir]
+        else:
+            ext = _detect_extension(config.bag_dir)
+            names = _sort_bag_files(config.bag_dir, ext)
+            # Also accept filenames without a numeric split suffix.
+            names += sorted(
+                name for name in os.listdir(config.bag_dir)
+                if name.endswith(f".{ext}") and name not in names
+            )
+            files = [os.path.join(config.bag_dir, name) for name in names]
+        run_cluster_extraction(config, files)
+        return
+
     config = load_config(args.config)
 
     config.kitti_selected_cameras = resolve_kitti_cameras(

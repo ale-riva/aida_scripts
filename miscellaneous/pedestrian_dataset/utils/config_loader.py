@@ -44,6 +44,20 @@ class MatchingConfig:
 
 
 @dataclass
+class ClusterConfig:
+    bag_dir: str
+    lidar_topic: str
+    detection_topic: str
+    output_base_dir: str
+    on_existing: str
+    tolerance_ms: float
+    ego_pose: EgoPoseConfig
+    ego_pose_tolerance_ms: float
+    target_classes: Optional[List[int]] = None
+    cache_dir: Optional[str] = None
+
+
+@dataclass
 class EgoPoseConfig:
     topic: str          # ROS topic carrying tf2_msgs/msg/TFMessage (/tf)
     parent_frame: str   # frame_id of the world/map frame (map)
@@ -126,6 +140,67 @@ class PipelineConfig:
 # Public API
 # ---------------------------------------------------------------------------
 
+def load_cluster_config(yaml_path: str) -> ClusterConfig:
+    """Load the minimal config used by main.py --clusters."""
+    with open(yaml_path, "r") as fh:
+        raw = yaml.safe_load(fh)
+
+    inp = _require(raw, "input", "root")
+    out = _require(raw, "output", "root")
+    match = _require(raw, "matching", "root")
+    tolerance_ms = float(_require(match, "tolerance_ms", "matching"))
+    if not 0 <= tolerance_ms < float("inf"):
+        raise ValueError("Config: matching.tolerance_ms must be finite and nonnegative")
+    ego_pose_tolerance_ms = float(match.get("ego_pose_tolerance_ms", tolerance_ms))
+    if not 0 <= ego_pose_tolerance_ms < float("inf"):
+        raise ValueError("Config: matching.ego_pose_tolerance_ms must be finite and nonnegative")
+    target_classes = match.get("target_classes")
+    if target_classes is not None:
+        if not isinstance(target_classes, list) or any(
+            type(class_id) is not int or not 0 <= class_id <= 255
+            for class_id in target_classes
+        ):
+            raise ValueError("Config: matching.target_classes must be a list of integer class IDs (0-255) or null")
+    settings = {}
+    if "vehicle" in raw:
+        settings, _ = _load_vehicle_settings(raw, yaml_path)
+
+    lidar_topic = inp.get("lidar_topic")
+    if lidar_topic is None and settings:
+        lidars = _require(settings, "lidars", "settings")
+        if not lidars:
+            raise ValueError("Settings: at least one lidar must be defined")
+        lidar_key = inp.get("lidar_key", sorted(lidars)[0])
+        if lidar_key not in lidars:
+            raise ValueError(f"Config: unknown input.lidar_key '{lidar_key}'. Available: {sorted(lidars)}")
+        lidar_topic = _require(lidars[lidar_key], "topic", f"lidars.{lidar_key}")
+    if lidar_topic is None:
+        lidar_topic = _require(inp, "lidar_topic", "input")
+
+    ego_pose_raw = dict(settings.get("ego_pose", {}))
+    ego_pose_raw.update(raw.get("ego_pose", {}))
+    policy = out.get("on_existing", "skip")
+    if policy not in ("skip", "overwrite", "abort"):
+        raise ValueError(f"Config: output.on_existing must be skip|overwrite|abort, got '{policy}'")
+
+    return ClusterConfig(
+        bag_dir=os.path.expanduser(_require(inp, "bag_dir", "input")),
+        lidar_topic=lidar_topic,
+        detection_topic=_require(inp, "detection_topic", "input"),
+        output_base_dir=os.path.expanduser(_require(out, "base_dir", "output")),
+        on_existing=policy,
+        tolerance_ms=tolerance_ms,
+        ego_pose=EgoPoseConfig(
+            topic=_require(ego_pose_raw, "topic", "ego_pose"),
+            parent_frame=_require(ego_pose_raw, "parent_frame", "ego_pose"),
+            child_frame=_require(ego_pose_raw, "child_frame", "ego_pose"),
+        ),
+        ego_pose_tolerance_ms=ego_pose_tolerance_ms,
+        target_classes=target_classes,
+        cache_dir=os.path.expanduser(inp["cache_dir"]) if inp.get("cache_dir") is not None else None,
+    )
+
+
 def load_config(yaml_path: str) -> PipelineConfig:
     """
     Parse the main config YAML at `yaml_path`, resolve the vehicle settings file
@@ -137,24 +212,7 @@ def load_config(yaml_path: str) -> PipelineConfig:
     with open(yaml_path, "r") as fh:
         raw = yaml.safe_load(fh)
 
-    # Resolve and load the settings file
-    config_dir = os.path.dirname(os.path.abspath(yaml_path))
-    veh_section = _require(raw, "vehicle", "root")
-    settings_rel = _require(veh_section, "settings", "vehicle")
-    settings_path = (
-        settings_rel if os.path.isabs(settings_rel)
-        else os.path.join(config_dir, settings_rel)
-    )
-
-    if not os.path.isfile(settings_path):
-        raise FileNotFoundError(
-            f"Vehicle settings file not found: {settings_path}\n"
-            f"  (referenced by vehicle.settings in {yaml_path})"
-        )
-
-    with open(settings_path, "r") as fh:
-        settings = yaml.safe_load(fh)
-
+    settings, settings_path = _load_vehicle_settings(raw, yaml_path)
     return _parse(raw, settings, yaml_path, settings_path)
 
 
@@ -188,6 +246,24 @@ def _require(d: dict, key: str, section: str):
     if key not in d:
         raise ValueError(f"Config: missing required key '{key}' in section '{section}'")
     return d[key]
+
+
+def _load_vehicle_settings(raw: dict, yaml_path: str) -> tuple[dict, str]:
+    """Resolve vehicle.settings relative to the main config and read it."""
+    config_dir = os.path.dirname(os.path.abspath(yaml_path))
+    veh_section = _require(raw, "vehicle", "root")
+    settings_rel = os.path.expanduser(_require(veh_section, "settings", "vehicle"))
+    settings_path = (
+        settings_rel if os.path.isabs(settings_rel)
+        else os.path.join(config_dir, settings_rel)
+    )
+    if not os.path.isfile(settings_path):
+        raise FileNotFoundError(
+            f"Vehicle settings file not found: {settings_path}\n"
+            f"  (referenced by vehicle.settings in {yaml_path})"
+        )
+    with open(settings_path, "r") as fh:
+        return yaml.safe_load(fh), settings_path
 
 
 def _parse(raw: dict, settings: dict, yaml_path: str, settings_path: str) -> PipelineConfig:

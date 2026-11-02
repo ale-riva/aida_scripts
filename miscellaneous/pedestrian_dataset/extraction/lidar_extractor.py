@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import os
-import struct
 
 import numpy as np
 from sensor_msgs.msg import PointField
@@ -104,54 +103,52 @@ def build_lidar_output_path(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _write_pcd(cloud_msg, out_path: str) -> None:
+def read_cloud_points(cloud_msg) -> np.ndarray:
+    """View all PointCloud2 fields, respecting offsets, row padding and byte order."""
+    fields = sorted(cloud_msg.fields, key=lambda f: f.offset)
+    byte_order = ">" if cloud_msg.is_bigendian else "<"
+    formats = []
+    for field in fields:
+        np_type, _, _ = _PF_TO_NP[field.datatype]
+        dtype = np.dtype(byte_order + np_type)
+        formats.append((dtype, (field.count,)) if field.count > 1 else dtype)
+    dtype = np.dtype({
+        "names": [f.name for f in fields],
+        "formats": formats,
+        "offsets": [f.offset for f in fields],
+        "itemsize": cloud_msg.point_step,
+    })
+    return np.ndarray(
+        shape=(cloud_msg.height, cloud_msg.width), dtype=dtype,
+        buffer=bytes(cloud_msg.data),
+        strides=(cloud_msg.row_step, cloud_msg.point_step),
+    ).reshape(-1)
+
+
+def _write_pcd(cloud_msg, out_path: str, point_indices=None) -> None:
     """
     Write a PointCloud2 message to a binary PCD file, preserving every field
     (x, y, z, intensity, ring, timestamp, ...) with its original data type.
 
-    The result is a valid PCD v0.7 binary file.
+    If point_indices is provided, write only that subset (indices or boolean mask).
+    The result is a valid PCD v0.7 binary file, in little-endian byte order.
     """
     fields = sorted(cloud_msg.fields, key=lambda f: f.offset)
-    num_points = cloud_msg.width * cloud_msg.height
+    arr = read_cloud_points(cloud_msg)
+    if point_indices is not None:
+        arr = arr[point_indices]
+    num_points = len(arr)
 
     if num_points == 0:
         logger.warning("Empty point cloud - writing zero-point PCD: %s", out_path)
 
     # ------------------------------------------------------------------ #
-    # Step 1: build a numpy dtype that mirrors the full point_step layout
-    # (real fields + anonymous padding bytes for any gaps)
-    # ------------------------------------------------------------------ #
-    padded_dtype_list = []
-    cursor = 0
-    for i, field in enumerate(fields):
-        if field.offset > cursor:
-            gap = field.offset - cursor
-            padded_dtype_list.append((f"_pad_{i}", "u1") if gap == 1 else (f"_pad_{i}", "u1", gap))
-            cursor = field.offset
-        np_type, byte_size, _ = _PF_TO_NP[field.datatype]
-        if field.count > 1:
-            padded_dtype_list.append((field.name, np_type, field.count))
-        else:
-            padded_dtype_list.append((field.name, np_type))
-        cursor += byte_size * field.count
-    if cursor < cloud_msg.point_step:
-        tail = cloud_msg.point_step - cursor
-        padded_dtype_list.append(("_pad_end", "u1") if tail == 1 else ("_pad_end", "u1", tail))
-
-    padded_dtype = np.dtype(padded_dtype_list)
-
-    # ------------------------------------------------------------------ #
-    # Step 2: interpret the raw buffer (zero-copy view)
-    # ------------------------------------------------------------------ #
-    raw = bytes(cloud_msg.data)
-    arr = np.frombuffer(raw, dtype=padded_dtype, count=num_points)
-
-    # ------------------------------------------------------------------ #
-    # Step 3: pack only the real fields (no padding) into a tight array
+    # Pack only the real fields (no padding) into a tight array
     # ------------------------------------------------------------------ #
     real_dtype_list = []
     for field in fields:
         np_type, _, _ = _PF_TO_NP[field.datatype]
+        np_type = "<" + np_type
         if field.count > 1:
             real_dtype_list.append((field.name, np_type, field.count))
         else:
@@ -164,7 +161,7 @@ def _write_pcd(cloud_msg, out_path: str) -> None:
     binary_data = packed.tobytes()
 
     # ------------------------------------------------------------------ #
-    # Step 4: assemble and write the PCD header + binary payload
+    # Assemble and write the PCD header + binary payload
     # ------------------------------------------------------------------ #
     field_names  = []
     field_sizes  = []

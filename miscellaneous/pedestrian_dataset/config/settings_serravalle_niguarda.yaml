@@ -1,0 +1,38 @@
+# ==============================================================================
+# Sensor settings: EVA  (7 cameras, 3 LiDARs)
+# This file defines sensor topics, frame IDs, and the calibration reference frame.
+# It is loaded automatically by the pipeline when config.yaml references it.
+# ==============================================================================
+
+# All sensor-to-sensor transforms are expressed relative to this frame.
+reference_frame: "ekf"
+
+# LiDAR order matters: lidar_front is the reference used for timestamp matching.
+lidars:
+  lidar_center:
+    topic: "/ouster_sensor_center/points"
+    frame_id: "ouster_sensor_center"
+
+# Camera order defines the column order in the output CSV (camera_0 .. camera_6).
+cameras:
+  camera_0:
+    topic: "/lucid_vision/lucid_cam_front_left/image_rect/compressed"
+    frame_id: "camera_cl"
+    name: "camera_cl"
+    compressed: true
+  camera_1:
+    topic: "/lucid_vision/lucid_cam_front_center/image_rect/compressed"
+    frame_id: "camera_fl"
+    name: "camera_fl"
+    compressed: true
+  camera_2:
+    topic: "/lucid_vision/lucid_cam_front_right/image_rect/compressed"
+    frame_id: "camera_fr"
+    name: "camera_fr"
+    compressed: true
+
+# Topic and frame pair used to extract ego pose for each matched group.
+ego_pose:
+  topic: "/tf"
+  parent_frame: "map"
+  child_frame: "ekf"
