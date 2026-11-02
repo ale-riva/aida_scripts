@@ -55,6 +55,9 @@ class ClusterConfig:
     ego_pose_tolerance_ms: float
     target_classes: Optional[List[int]] = None
     lidar_key: str = "lidar"
+    urdf_path: str = "from_tf_static"
+    reference_frame: Optional[str] = None
+    lidar_frame_id: Optional[str] = None
 
 
 @dataclass
@@ -98,7 +101,7 @@ class SceneConfig:
 class PipelineConfig:
     # I/O
     bag_dir: str
-    calibration_yaml: str
+    calibration_yaml: Optional[str]
     urdf_path: str
     output_base_dir: str
     on_existing: str            # "skip" | "overwrite" | "abort"
@@ -108,7 +111,7 @@ class PipelineConfig:
     num_cameras: int
 
     # Calibration
-    reference_frame: str        # URDF link name used as the common extrinsics reference frame
+    reference_frame: str        # URDF/TF frame used as the common extrinsics reference frame
 
     # Sensors (ordered lists) (index 0 is always the reference)
     lidars: List[LidarConfig]
@@ -167,6 +170,7 @@ def load_cluster_config(yaml_path: str) -> ClusterConfig:
 
     lidar_topic = inp.get("lidar_topic")
     lidar_key = inp.get("lidar_key", "lidar")
+    lidar_frame_id = None
     if settings:
         lidars = _require(settings, "lidars", "settings")
         if not lidars:
@@ -176,6 +180,7 @@ def load_cluster_config(yaml_path: str) -> ClusterConfig:
             raise ValueError(f"Config: unknown input.lidar_key '{lidar_key}'. Available: {sorted(lidars)}")
         if lidar_topic is None:
             lidar_topic = _require(lidars[lidar_key], "topic", f"lidars.{lidar_key}")
+        lidar_frame_id = lidars[lidar_key].get("frame_id")
     if lidar_topic is None:
         lidar_topic = _require(inp, "lidar_topic", "input")
 
@@ -200,6 +205,9 @@ def load_cluster_config(yaml_path: str) -> ClusterConfig:
         ego_pose_tolerance_ms=ego_pose_tolerance_ms,
         target_classes=target_classes,
         lidar_key=lidar_key,
+        urdf_path=_resolve_calibration_path(inp.get("urdf_path") or "from_tf_static", yaml_path),
+        reference_frame=settings.get("reference_frame", ego_pose_raw.get("child_frame")),
+        lidar_frame_id=lidar_frame_id,
     )
 
 
@@ -248,6 +256,13 @@ def _require(d: dict, key: str, section: str):
     if key not in d:
         raise ValueError(f"Config: missing required key '{key}' in section '{section}'")
     return d[key]
+
+
+def _resolve_calibration_path(path: str, yaml_path: str) -> str:
+    if path == "from_tf_static":
+        return path
+    path = os.path.expanduser(path)
+    return path if os.path.isabs(path) else os.path.join(os.path.dirname(os.path.abspath(yaml_path)), path)
 
 
 def _load_vehicle_settings(raw: dict, yaml_path: str) -> tuple[dict, str]:
@@ -380,8 +395,8 @@ def _parse(raw: dict, settings: dict, yaml_path: str, settings_path: str) -> Pip
 
     return PipelineConfig(
         bag_dir              = _require(inp, "bag_dir",          "input"),
-        calibration_yaml     = _require(inp, "calibration_yaml", "input"),
-        urdf_path            = _require(inp, "urdf_path",        "input"),
+        calibration_yaml     = _resolve_calibration_path(inp["calibration_yaml"], yaml_path) if inp.get("calibration_yaml") else None,
+        urdf_path            = _resolve_calibration_path(inp.get("urdf_path") or "from_tf_static", yaml_path),
         output_base_dir      = _require(out, "base_dir",         "output"),
         on_existing          = policy,
         vehicle_name         = _require(veh, "name",             "vehicle"),

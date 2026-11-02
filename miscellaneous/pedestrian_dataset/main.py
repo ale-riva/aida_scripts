@@ -25,7 +25,8 @@ from bag_reader import make_parser
 from timestamp_matching.matcher import match_timestamps
 from extraction.lidar_extractor import extract_lidar_frame, build_lidar_output_path
 from extraction.camera_extractor import extract_camera_frame, build_camera_output_path
-from extraction.calibration_extractor import extract_calibration
+from extraction.calibration_extractor import extract_calibration, load_tf_static_from_parser
+from utils.tf_static_parser import TFStaticParser
 from extraction.ego_pose_extractor import load_ego_poses_from_parser, find_ego_pose_at
 from extraction.inspection_metadata_writer import write_inspection_config
 from file_writer.csv_writer import write_csv
@@ -113,6 +114,7 @@ def run_stage1(config) -> str:
     # Ego pose: accumulate chunks from each file
     ego_ts_chunks: list = []
     ego_pose_chunks: list = []
+    static_transforms = TFStaticParser() if config.urdf_path == "from_tf_static" else None
 
     for fname in files:  #TODO: optimize the loop by only opening each file once
         fpath = os.path.join(bag_dir, fname)
@@ -144,6 +146,8 @@ def run_stage1(config) -> str:
         if len(file_ego_ts) > 0:
             ego_ts_chunks.append(file_ego_ts)
             ego_pose_chunks.append(file_ego_poses)
+        if static_transforms is not None:
+            load_tf_static_from_parser(parser, static_transforms)
 
     # Merge ego pose chunks from all files into one sorted array
     if ego_ts_chunks:
@@ -248,15 +252,18 @@ def run_stage1(config) -> str:
     write_ego_pose_csv(groups, ego_pose_results, ref_key, ego_pose_path)
 
     ## Extract and write calibration.
-    sensor_links = (
+    camera_frame_ids = [
+        c.frame_id for c in config.cameras
+        if any(group.camera_timestamps.get(c.key) is not None for group in groups)
+    ]
+    sensor_links = list(dict.fromkeys(
         [l.frame_id for l in config.lidars] +
-        [c.frame_id for c in config.cameras] +
+        camera_frame_ids +
         # The fused-LiDAR annotations (labels/lidar/) are anchored at this
         # frame, which is physically distinct from reference_frame
         # (ring_center) - the KITTI label converter needs its extrinsic too.
         [config.ego_pose.child_frame]
-    )
-    camera_frame_ids = [c.frame_id for c in config.cameras]
+    ))
 
     extract_calibration(
         urdf_path         = config.urdf_path,
@@ -265,6 +272,7 @@ def run_stage1(config) -> str:
         reference_frame   = config.reference_frame,
         sensor_links      = sensor_links,
         camera_frame_ids  = camera_frame_ids,
+        tf_static         = static_transforms,
     )
 
     write_inspection_config(config, stage1_out)

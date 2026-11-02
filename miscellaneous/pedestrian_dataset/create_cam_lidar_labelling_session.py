@@ -287,7 +287,7 @@ def process_label(
       - otherwise, add annotator and write JSON to labelling_session/label
     """
 
-    label_path = input_labels_dir / f"{ref_stem}.json"
+    label_path = input_labels_dir / "lidar" /f"{ref_stem}.json"
     output_label_path = output_labels_dir / f"{ref_stem}.json"
 
     if not label_path.is_file():

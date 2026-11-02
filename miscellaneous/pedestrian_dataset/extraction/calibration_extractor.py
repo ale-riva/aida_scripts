@@ -3,7 +3,7 @@ Calibration extraction and conversion.
 
 Reads:
   - camera_calibrations_<robot>.param.yaml  ->  intrinsics (K, distortion, frame dims)
-  - <robot>.urdf                            ->  extrinsics (sensor poses via joint transforms)
+  - <robot>.urdf or /tf_static               ->  extrinsics (sensor poses via chained transforms)
 
 Produces:
   - <stage1_out>/calibration.yaml
@@ -24,6 +24,7 @@ import numpy as np
 import yaml
 
 from utils.UrdfParser import URDFParser
+from utils.tf_static_parser import TFStaticParser
 
 logger = logging.getLogger(__name__)
 
@@ -176,23 +177,25 @@ def _validate(
 
 def extract_calibration(
     urdf_path: str,
-    intrinsics_yaml_path: str,
+    intrinsics_yaml_path: Optional[str],
     stage1_out: str,
     reference_frame: str = "center_of_gravity",
     sensor_links: Optional[List[str]] = None,
     camera_frame_ids: Optional[List[str]] = None,
+    tf_static: Optional[TFStaticParser] = None,
 ) -> dict:
     """
-    Parse calibration sources, produce a unified calibration dict, and write
+    Parse URDF or recorded static transforms, produce a unified calibration dict, and write
     it to <stage1_out>/calibration.yaml.
 
     Parameters
-    urdf_path             : path to the car URDF file.
-    intrinsics_yaml_path  : path to the camera-calibrations YAML.
+    urdf_path             : path to the car URDF file, or "from_tf_static".
+    intrinsics_yaml_path  : camera intrinsics YAML; optional when no cameras are exported.
     stage1_out            : directory where calibration.yaml is written.
     reference_frame       : used as the common reference for all extrinsic matrices.
     sensor_links          : explicit list of URDF link names to compute extrinsics for.
     camera_frame_ids      : subset of "sensor_links" that are cameras; used only to produce more precise validation warnings.
+    tf_static             : accumulated /tf_static transforms when urdf_path is "from_tf_static".
 
     Returns
     dictionary with keys:
@@ -200,28 +203,38 @@ def extract_calibration(
         "extrinsics"      : {link_name: [[4x4 float matrix as nested list]]}
         "intrinsics"      : {camera_name: {fx, fy, cx, cy, ...}}
     """
-    logger.info("Parsing URDF extrinsics  : %s", urdf_path)
-    logger.info("Parsing camera intrinsics: %s", intrinsics_yaml_path)
+    logger.info("Extrinsics source        : %s", urdf_path)
     logger.info("Reference frame          : %s", reference_frame)
 
-    urdf_parser = URDFParser(urdf_path)
+    if urdf_path == "from_tf_static":
+        if tf_static is None:
+            raise ValueError("from_tf_static requires static transforms loaded from the input bag")
+        extrinsic_parser = tf_static
+    else:
+        extrinsic_parser = URDFParser(urdf_path)
 
     if sensor_links is None:
-        sensor_links = _infer_sensor_links(urdf_parser)
+        sensor_links = sorted(tf_static.frames) if urdf_path == "from_tf_static" else _infer_sensor_links(extrinsic_parser)
     else:
         logger.info("Using %d sensor link(s) from vehicle settings.", len(sensor_links))
 
     # Compute T_sensor_to_reference_frame for every sensor.
     extrinsics: Dict[str, list] = {}
     for link in sensor_links:
-        T = urdf_parser.get_transform(link, reference_frame)
+        T = extrinsic_parser.get_transform(link, reference_frame)
         if T is not None:
             extrinsics[link] = T.tolist()
         else:
+            if urdf_path == "from_tf_static":
+                raise ValueError(f"No /tf_static transform path from '{link}' to reference frame '{reference_frame}'")
             logger.warning("Could not compute transform for '%s'; skipping.", link)
 
-    intrinsics = _parse_camera_intrinsics(intrinsics_yaml_path)
-    _validate(extrinsics, intrinsics, camera_frame_ids=camera_frame_ids)
+    intrinsics = {}
+    if camera_frame_ids != [] and intrinsics_yaml_path:
+        intrinsics = _parse_camera_intrinsics(intrinsics_yaml_path)
+        _validate(extrinsics, intrinsics, camera_frame_ids=camera_frame_ids)
+    elif camera_frame_ids:
+        raise ValueError("input.calibration_yaml is required when cameras are exported")
 
     calibration = {
         # reference_frame: the coordinate frame in which all extrinsics are expressed.
@@ -241,3 +254,12 @@ def extract_calibration(
         out_path, len(extrinsics), len(intrinsics),
     )
     return calibration
+
+
+def load_tf_static_from_parser(parser, tf_static: TFStaticParser) -> None:
+    """Accumulate static transforms from one bag split without modifying bag readers."""
+    if not hasattr(parser, "reader") and "/tf_static" not in parser.topic_id:
+        return
+    messages = parser.get_messages(topics="/tf_static", start_time=0, end_time=int(np.iinfo(np.int64).max))
+    for _, message in messages:
+        tf_static.add_message(message)

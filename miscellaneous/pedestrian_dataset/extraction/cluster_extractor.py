@@ -16,6 +16,7 @@ import numpy as np
 from rclpy.serialization import deserialize_message
 
 from bag_reader import make_parser
+from extraction.calibration_extractor import extract_calibration
 from extraction.ego_pose_extractor import iter_ego_poses, find_ego_pose_at
 from extraction.lidar_extractor import _write_pcd, read_cloud_points, build_lidar_output_path
 from file_writer.csv_writer import write_csv
@@ -24,6 +25,7 @@ from file_writer.detection_confidence_csv_writer import write_detection_confiden
 from file_writer.ego_pose_csv_writer import write_ego_pose_csv
 from timestamp_matching.matcher import SampleGroup, _find_closest_within
 from utils.timestamp_utils import ns_to_filename
+from utils.tf_static_parser import TFStaticParser
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +113,9 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
     ego_ts = []
     ego_poses = []
     topics = sorted({config.lidar_topic, config.detection_topic, config.ego_pose.topic})
+    static_transforms = TFStaticParser() if config.urdf_path == "from_tf_static" else None
+    if static_transforms is not None:
+        topics = sorted(set(topics) | {"/tf_static"})
 
     # Pass 1: collect all topics together and retain only the small messages.
     for fpath in files:
@@ -120,11 +125,13 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
         try:
             for topic, recording_timestamp, type_name, payload in _iter_serialized_messages(parser, topics):
                 message = _decode_message(parser, topic, type_name, payload)
+                if topic == "/tf_static" and static_transforms is not None:
+                    static_transforms.add_message(message)
                 if topic == config.ego_pose.topic:
                     for ts, pose in iter_ego_poses(message, config.ego_pose.parent_frame, config.ego_pose.child_frame):
                         ego_ts.append(ts)
                         ego_poses.append(pose)
-                else:
+                elif topic != "/tf_static":
                     stamp = message.header.stamp
                     timestamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
                     if topic == config.lidar_topic:
@@ -169,6 +176,7 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
     # Pass 2: stream clouds and finish every associated detection before advancing.
     written = 0
     frame_confidences = {}
+    calibration = None
     for fpath in files:
         file_matches = cloud_detections.get(fpath)
         if not file_matches:
@@ -183,6 +191,20 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
                 if matches is None:
                     continue
                 cloud_msg = _decode_message(parser, topic, type_name, payload)
+                cloud_frame = cloud_msg.header.frame_id.lstrip("/")
+                if calibration is None:
+                    lidar_frame = config.lidar_frame_id or cloud_msg.header.frame_id
+                    if lidar_frame.lstrip("/") != cloud_frame:
+                        raise ValueError("Configured LiDAR frame_id differs from the exported cloud frame")
+                    calibration = extract_calibration(
+                        urdf_path=config.urdf_path, intrinsics_yaml_path=None, stage1_out=stage1_out,
+                        reference_frame=config.reference_frame or config.ego_pose.child_frame,
+                        sensor_links=list(dict.fromkeys([lidar_frame, config.ego_pose.child_frame])),
+                        camera_frame_ids=[], tf_static=static_transforms,
+                    )
+                    lidar_to_reference = calibration["extrinsics"].get(lidar_frame)
+                elif lidar_frame.lstrip("/") != cloud_frame:
+                    raise ValueError("Exported point clouds must share the configured LiDAR frame")
                 stamp = cloud_msg.header.stamp
                 timestamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
                 for _, detection_msg in matches:
@@ -196,7 +218,7 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
                     written += extract_detection_clusters(cloud_msg, detection_msg, timestamp_ns, stage1_out, config.on_existing)
                 else:
                     written += _write_lidar_sample(cloud_msg, timestamp_ns, stage1_out, config.on_existing, config.lidar_key)
-                write_detection_labels(detections, timestamp_ns, stage1_out, config.on_existing)
+                write_detection_labels(detections, timestamp_ns, stage1_out, config.on_existing, transform=lidar_to_reference)
                 frame_confidences[timestamp_ns] = {int(detection.box_id): float(detection.score) for detection, _ in detections}
                 del cloud_msg
                 if not file_matches:
