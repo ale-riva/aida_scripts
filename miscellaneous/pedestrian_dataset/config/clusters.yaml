@@ -4,6 +4,9 @@ input:
   bag_dir: "/mnt/storage/AIDA/bags/2026-10-19/2026-10-19_16-24-06_normal"  # bag folder or a single .mcap / .db3 file
   lidar_key: "lidar_center"  # entry in the settings file's lidars section
   detection_topic: "/perception/multimodal_3d_detections"
+  # calibration_yaml is only used for camera exports in the regular pipeline.
+  # calibration_yaml: "~/polimove_code/polimove_dev/src/common/config/param/camera_calibrations/camera_calibrations_eva.param.yaml"
+  urdf_path: "from_tf_static"  # or a URDF file path; omitted defaults to /tf_static
 
 vehicle:
   settings: "settings_serravalle_niguarda.yaml"  # relative to this config file
