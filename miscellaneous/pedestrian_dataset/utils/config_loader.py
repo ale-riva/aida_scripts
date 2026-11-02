@@ -54,7 +54,6 @@ class ClusterConfig:
     ego_pose: EgoPoseConfig
     ego_pose_tolerance_ms: float
     target_classes: Optional[List[int]] = None
-    cache_dir: Optional[str] = None
 
 
 @dataclass
@@ -141,7 +140,7 @@ class PipelineConfig:
 # ---------------------------------------------------------------------------
 
 def load_cluster_config(yaml_path: str) -> ClusterConfig:
-    """Load the minimal config used by main.py --clusters."""
+    """Load the detection-driven Stage-1 config used by main.py --from_det."""
     with open(yaml_path, "r") as fh:
         raw = yaml.safe_load(fh)
 
@@ -197,7 +196,6 @@ def load_cluster_config(yaml_path: str) -> ClusterConfig:
         ),
         ego_pose_tolerance_ms=ego_pose_tolerance_ms,
         target_classes=target_classes,
-        cache_dir=os.path.expanduser(inp["cache_dir"]) if inp.get("cache_dir") is not None else None,
     )
 
 

@@ -5,7 +5,8 @@ Stage 2:  intermediate -> KITTI / nuScenes / Waymo  (format conversion)
 Usage
     python main.py --config config/config_eva.yaml
     python main.py --config config/config_minerva.yaml --stage 1
-    python main.py --config config/clusters.yaml --clusters
+    python main.py --config config/clusters.yaml --stage 1 --from_det
+    python main.py --config config/clusters.yaml --stage 1 --from_det --cluster
 """
 
 from __future__ import annotations
@@ -297,8 +298,12 @@ def _parse_args():
     parser = argparse.ArgumentParser(description="bag_to_fusion_dataset: BAG -> KITTI / nuScenes / Waymo")
     parser.add_argument("--config", required=True, help="Path to the YAML config file")
     parser.add_argument(
-        "--clusters", action="store_true",
-        help="Extract detection-box point clouds using the minimal cluster config",
+        "--from_det", action="store_true",
+        help="Run Stage 1 from 3-D detections using the detection extraction config",
+    )
+    parser.add_argument(
+        "--cluster", action="store_true",
+        help="With --from_det: save selected detection clusters instead of full LiDAR clouds",
     )
     parser.add_argument("--stage", type=int, choices=[1, 2, 12], default=12, help="Which stage(s) to run: 1, 2, or 12 (both). Default: 12")
     parser.add_argument(
@@ -307,13 +312,18 @@ def _parse_args():
              "(e.g. --cameras camera_0 camera_2). Overrides kitti.cameras in the "
              "config. Default: all configured cameras.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.cluster and not args.from_det:
+        parser.error("--cluster requires --from_det")
+    if args.from_det and args.stage == 2:
+        parser.error("--from_det is a Stage-1 option; use --stage 1 or omit --stage")
+    return args
 
 
 def main():
     args   = _parse_args()
-    if args.clusters:
-        from extraction.cluster_extractor import run_cluster_extraction
+    if args.from_det:
+        from extraction.cluster_extractor import run_detection_extraction
 
         config = load_cluster_config(args.config)
         if os.path.isfile(config.bag_dir):
@@ -327,7 +337,7 @@ def main():
                 if name.endswith(f".{ext}") and name not in names
             )
             files = [os.path.join(config.bag_dir, name) for name in names]
-        run_cluster_extraction(config, files)
+        run_detection_extraction(config, files, cluster=args.cluster)
         return
 
     config = load_config(args.config)

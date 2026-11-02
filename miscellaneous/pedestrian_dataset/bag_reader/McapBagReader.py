@@ -14,10 +14,6 @@ from typing import (
     Optional,
     Tuple,
 )
-try:
-    from mcap.reader import make_reader
-except ImportError:
-    make_reader = None
 from rosidl_runtime_py.utilities import get_message
 from rclpy.serialization import deserialize_message
 import rosbag2_py
@@ -113,8 +109,8 @@ def read_points(cloud, field_names=None, skip_nans=False, uvs=[]):
 class _Rosbag2Reader:
     """Expose the MCAP iteration interface through ROS 2's MCAP storage plugin.
 
-    Humble's read_next() exposes recording time only, so publish_time falls
-    back to log_time. Iteration follows the native reader's timestamp order;
+    Humble's read_next() exposes recording time only, so publish_time mirrors
+    log_time for compatibility. Iteration follows the native reader's timestamp order;
     log_time_order is retained for API compatibility. Reverse reads buffer
     only the requested topic/time window.
     """
@@ -180,9 +176,8 @@ class MCAPBagFileParser:
 
     Notes:
       * Pass the path to a single `.mcap` file (not a directory).
-      * Uses the Python mcap reader when available, otherwise rosbag2_py.
-      * Query windows use log_time; returned timestamps use publish_time with
-        the Python backend, or recording time with rosbag2_py on Humble.
+      * Uses rosbag2_py with the ROS MCAP storage plugin.
+      * Query windows and returned timestamps use recording time.
       * Message decoding uses ROS 2 CDR -> Python via rosidl/rclpy, same as your db3 parser.
     """
 
@@ -192,13 +187,7 @@ class MCAPBagFileParser:
             raise FileNotFoundError(f"No such file: {self._path}")
         if self._path.is_dir():
             raise ValueError(f"Expected an .mcap file, got directory: {self._path}")
-        # Keep the same reader interface with either MCAP backend.
-        self._fh = None
-        if make_reader is not None:
-            self._fh = open(self._path, "rb")
-            self.reader = make_reader(self._fh)
-        else:
-            self.reader = _Rosbag2Reader(self._path)
+        self.reader = _Rosbag2Reader(self._path)
 
         # Public attributes to mirror your sqlite-based parser
         self.topic_type = {}         # {topic_name: "pkg/msg/Type"}
@@ -227,10 +216,7 @@ class MCAPBagFileParser:
         #                 print("Message: " + type_str)
 
     def __del__(self):
-        try:
-            self._fh.close()
-        except Exception:
-            pass
+        self.reader = None
 
     # ---------- Internal helpers ----------
 

@@ -10,7 +10,7 @@ Only transforms whose (frame_id, child_frame_id) match the configured pair are e
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -61,14 +61,9 @@ def load_ego_poses_from_parser(
     pose_list: List[List[float]] = []
 
     for _, tf_msg in messages:
-        for transform in tf_msg.transforms:
-            if (transform.header.frame_id == parent_frame and transform.child_frame_id == child_frame):
-                stamp = transform.header.stamp
-                ts_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
-                tr = transform.transform.translation
-                rot = transform.transform.rotation
-                ts_list.append(ts_ns)
-                pose_list.append([tr.x, tr.y, tr.z, rot.x, rot.y, rot.z, rot.w])
+        for ts_ns, pose in iter_ego_poses(tf_msg, parent_frame, child_frame):
+            ts_list.append(ts_ns)
+            pose_list.append(pose)
 
     if not ts_list:
         logger.warning(
@@ -86,6 +81,17 @@ def load_ego_poses_from_parser(
         len(ts_arr), parent_frame, child_frame, topic,
     )
     return ts_arr[order], pose_arr[order]
+
+
+def iter_ego_poses(tf_msg, parent_frame: str, child_frame: str) -> Iterator[Tuple[int, List[float]]]:
+    """Yield matching TF header timestamps and [x, y, z, qx, qy, qz, qw] rows."""
+    for transform in tf_msg.transforms:
+        if transform.header.frame_id == parent_frame and transform.child_frame_id == child_frame:
+            stamp = transform.header.stamp
+            ts_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
+            tr = transform.transform.translation
+            rot = transform.transform.rotation
+            yield ts_ns, [tr.x, tr.y, tr.z, rot.x, rot.y, rot.z, rot.w]
 
 
 # ---------------------------------------------------------------------------
