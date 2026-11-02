@@ -5,7 +5,7 @@
 # ==============================================================================
 
 # All sensor-to-sensor transforms are expressed relative to this frame.
-reference_frame: "ekf"
+reference_frame: "ouster_sensor_center"
 
 # LiDAR keys name the output folders and CSV columns; the first is the timestamp reference.
 lidars:
@@ -34,5 +34,5 @@ cameras:
 # Topic and frame pair used to extract ego pose for each matched group.
 ego_pose:
   topic: "/tf"
-  parent_frame: "map"
-  child_frame: "ekf"
+  parent_frame: "ekf"
+  child_frame: "base_link"
