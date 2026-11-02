@@ -1,0 +1,11 @@
+# Python packages installed in the .venv (on top of the Docker system packages).
+
+open3d
+mcap
+mcap-ros2-support
+
+# To test nuscenes
+nuscenes-devkit
+
+# To manually label the images
+label-studio # [Note] I have installed it on my local machine

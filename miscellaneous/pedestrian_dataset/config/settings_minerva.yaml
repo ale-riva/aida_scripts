@@ -1,0 +1,69 @@
+# ==============================================================================
+# Sensor settings: MINERVA  (6 cameras, 3 LiDARs)
+# This file defines sensor topics and frame IDs.
+# It is loaded automatically by the pipeline when config.yaml references it.
+# ==============================================================================
+
+# ==============================================================================
+# Not tested yet
+# ==============================================================================
+
+# The URDF link used as the common coordinate frame for all extrinsic matrices.
+reference_frame: "center_of_gravity"
+
+# LiDAR order matters: lidar_front is the reference used for timestamp matching.
+# frame_id must match the link name in minerva.urdf (luminar_* family).
+lidars:
+  lidar_front:
+    topic: "/luminar_front_points"
+    frame_id: "luminar_front"
+  lidar_left:
+    topic: "/luminar_left_points"
+    frame_id: "luminar_left"
+  lidar_right:
+    topic: "/luminar_right_points"
+    frame_id: "luminar_right"
+
+# Camera order matches the CAM_N order in camera_calibrations_minerva.param.yaml.
+# name     -> NAME field in calibration YAML
+# frame_id -> FRAME_ID field in calibration YAML (= URDF link name)
+# topic    -> verified against bag metadata.yaml (sensor_msgs/msg/CompressedImage)
+# compressed: true — the bag publishes sensor_msgs/msg/CompressedImage on these topics.
+cameras:
+  camera_0:
+    topic: "/camera_left_side/image/compressed"
+    frame_id: "camera_side_left"
+    name: "camera_sl"
+    compressed: true
+  camera_1:
+    topic: "/camera_left_front/image/compressed"
+    frame_id: "camera_front_left"
+    name: "camera_fl"
+    compressed: true
+  camera_2:
+    topic: "/camera_right_front/image/compressed"
+    frame_id: "camera_front_right"
+    name: "camera_fr"
+    compressed: true
+  camera_3:
+    topic: "/camera_right_side/image/compressed"
+    frame_id: "camera_side_right"
+    name: "camera_sr"
+    compressed: true
+  camera_4:
+    topic: "/camera_front_hoop/image/compressed"
+    frame_id: "center_of_gravity"    # as declared in calibration YAML FRAME_ID
+    name: "camera_front_hoop"
+    compressed: true
+  camera_5:
+    topic: "/camera_back_hoop/image/compressed"
+    frame_id: "camera_rollhoop_rear"
+    name: "camera_back_hoop"
+    compressed: true
+  # Note: (the CSV column of camera_6 will be written but left empty)
+
+# Topic and frame pair used to extract ego pose for each matched group.
+ego_pose:
+  topic: "/tf"
+  parent_frame: "map"
+  child_frame: "center_of_gravity"

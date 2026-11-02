@@ -1,0 +1,44 @@
+# ==============================================================================
+# nuScenes channel name mapping: EVA  (7 cameras, 3 LiDARs)
+#
+# Consumed by: converters/nuscenes_converter.py
+# ==============================================================================
+
+# ---------------------------------------------------------------------------
+# LiDAR configuration
+# ---------------------------------------------------------------------------
+# merge: when true (default) all listed sources are fused into a single merged cloud stored under "merged_channel".
+# sources: Stage-1 lidar keys to merge.
+# merged_channel: the nuScenes channel name for the combined cloud.
+#
+# Note: nuScenes typically expects LIDAR_TOP; the merged cloud is expressed in the ring_center (= center_of_gravity) reference frame.
+# ---------------------------------------------------------------------------
+lidar:
+  merge: true
+  merged_channel: "LIDAR_TOP"
+  sources:
+    - lidar_front
+    - lidar_left
+    - lidar_right
+
+# ---------------------------------------------------------------------------
+# Camera mapping
+# ---------------------------------------------------------------------------
+# EVA frame_id -> approximate physical position:
+#   camera_cl  (camera_0)  front-left
+#   camera_fl  (camera_1)  front
+#   camera_fr  (camera_2)  front
+#   camera_cr  (camera_3)  front-right
+#   camera_rr  (camera_4)  rear-right
+#   camera_r   (camera_5)  rear center
+#   camera_rl  (camera_6)  rear-left
+#
+# ---------------------------------------------------------------------------
+cameras:
+  camera_0: "CAM_FRONT_LEFT"
+  camera_1: "CAM_FRONT"
+  camera_2: "CAM_FRONT"         # Note: camera_2 redundant, skipped
+  camera_3: "CAM_FRONT_RIGHT"
+  camera_4: "CAM_BACK_RIGHT"
+  camera_5: "CAM_BACK"
+  camera_6: "CAM_BACK_LEFT"

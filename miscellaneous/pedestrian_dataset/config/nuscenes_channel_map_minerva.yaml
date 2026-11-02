@@ -1,0 +1,31 @@
+# ==============================================================================
+# nuScenes channel name mapping: Minerva  (6 cameras, 3 LiDARs)
+#
+# Consumed by: converters/nuscenes_converter.py
+# ==============================================================================
+
+# ---------------------------------------------------------------------------
+# LiDAR configuration
+# ---------------------------------------------------------------------------
+lidar:
+  merge: true
+  merged_channel: "LIDAR_TOP"
+  sources:
+    - lidar_front
+    - lidar_left
+    - lidar_right
+
+# ---------------------------------------------------------------------------
+# Camera mapping (6 cameras; camera_6 is intentionally absent)
+# ---------------------------------------------------------------------------
+# TODO: Minerva frame_id -> approximate physical position
+# [the following mapping is not correct yet]
+# ---------------------------------------------------------------------------
+cameras:
+  camera_0: "CAM_FRONT"
+  camera_1: "CAM_FRONT_LEFT"
+  camera_2: "CAM_FRONT_RIGHT"
+  camera_3: "CAM_SIDE_RIGHT"
+  camera_4: "CAM_BACK_RIGHT"
+  camera_5: "CAM_BACK"
+  # (camera_6 not present on Minerva)

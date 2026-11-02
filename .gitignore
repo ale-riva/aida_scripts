@@ -3,3 +3,7 @@
 *.m~
 *.autosave
 
+
+*.pyc
+__pycache__
+

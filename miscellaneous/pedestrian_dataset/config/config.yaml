@@ -1,0 +1,83 @@
+# ==============================================================================
+# Pipeline configuration
+# Sensor topics are defined in the vehicle settings file referenced below.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# I/O paths
+# ------------------------------------------------------------------------------
+input:
+  bag_dir: "/media/dav/polimove-61/DATASETS/output/2025-10-04_11-53_lidar_radar_camera"
+  calibration_yaml: "~/polimove_code/polimove_dev/src/common/config/param/camera_calibrations/camera_calibrations_eva.param.yaml"
+  urdf_path: "~/polimove_code/polimove_dev/src/common/config/urdf/eva.urdf"
+
+output:
+  base_dir: "/media/dav/polimove-61/DATASETS/output"
+  on_existing: "skip" # policy when output already exists: skip | overwrite | abort
+
+# ------------------------------------------------------------------------------
+# Vehicle
+# ------------------------------------------------------------------------------
+vehicle:
+  name: "eva"
+  num_cameras: 7
+  settings: "settings_eva.yaml"  # path to the sensor-topics settings file
+
+# ------------------------------------------------------------------------------
+# Scene / log metadata
+# ------------------------------------------------------------------------------
+scene:
+  location: "YasNorth"   # geographic location of the recording session
+  description: ""        # optional free-text description of the scene
+  map_png_path: "~/polimove_code/polimove_track/target_tracking_map/map.png"
+    # absolute path to the map PNG to copy into maps/ (at least one .png is needed)
+
+# ------------------------------------------------------------------------------
+# Timestamp matching parameters (all time values in milliseconds)
+# ------------------------------------------------------------------------------
+matching:
+  tolerance_ms: 50.0             # (+-) ms max allowed LiDAR-camera time difference
+  sampling_interval_ms: 1000.0    # one sample group every X ms
+  ego_pose_tolerance_ms: 5.0    # (+-) ms max allowed distance for ego pose lookup
+
+# ------------------------------------------------------------------------------
+# Stage 2: output format(s)
+# ------------------------------------------------------------------------------
+output_formats:
+  # - kitti
+  - nuscenes
+  # - waymo
+
+# ------------------------------------------------------------------------------
+# KITTI-specific options
+# ------------------------------------------------------------------------------
+kitti:
+  # Cameras to include in the KITTI dataset, by key.
+  # Omit this key (or set it to null) to include all configured cameras.
+  cameras: ["camera_0", "camera_1", "camera_2", "camera_3", "camera_4", "camera_5", "camera_6"]
+
+# ------------------------------------------------------------------------------
+# NUSCENES-specific options
+# ------------------------------------------------------------------------------
+nuscenes:
+  scene_duration: 5.0 # [s] number of seconds for each scene length (Default: 20)
+                      # 0.0 -> creates one scene PER EACH SAMPLE
+                      # -1.0 -> creates ONE SCENE (with all samples)
+  
+  n_opponents: 1      # if 1, then link all detections to the same instance, (DEFAULT 1)
+                      # TODO: MULTIPLE opponent case (not implemented)
+  relative: False      # [T/F] if true, ego_pose is fixed at 0-> global labels are local labels
+
+  # Which Stage-1 timestamps file to use for the PRIMARY bag (input.bag_dir),
+  timestamps_file: "timestamps.csv"
+
+  # DEFAULT: no merging
+  merge_datasets: []
+
+  # OPTIONAL: additional, already-generated Stage-1 directories to merge into
+  # this same nuScenes output as extra logs.
+  # merge_datasets:
+  #     - stage1_dir: "/home/polimove-pc4/polimove_code/bags/2025-10-19_11-22_lidar_radar_camera_compressed/output/2025-10-19_11-22_lidar_radar_camera_compressed_DUPLICATED"
+  #       timestamps_file: "timestamps_curated.csv"
+  #       location: "YasNorth"     # optional - defaults to scene.location above
+  #       description: ""          # optional - defaults to scene.description above
