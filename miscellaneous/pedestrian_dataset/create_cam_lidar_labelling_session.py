@@ -199,20 +199,27 @@ def add_annotator_to_label(
 
 def write_camera(dataset_root, cam_key: str, row:dict, intr:dict, out_dir:Path, ref_stem: str)->None:
     cam_stem = row[cam_key]
-    src = os.path.join(dataset_root, "samples", cam_key, f"{cam_stem}.png")
-    if not os.path.isfile(src):
+    src_path = os.path.join(dataset_root, "samples", cam_key, f"{cam_stem}.png")
+    out_path = out_dir / f"{ref_stem}.jpg"
+
+    if not os.path.isfile(src_path):
         logger.warning(
-            "[LabSes] Camera image not found for %s at %s - skipping.", cam_key, src
+            "[LabSes] Camera image not found for %s at %s - skipping.", cam_key, src_path
         )
         return
-    
-    img = Image.open(src).convert("RGB")
-    img_np = np.array(img, dtype=np.uint8)
-    img_np = _undistort_image(img_np, intr)
-    img = Image.fromarray(img_np)
 
-    out_path = out_dir / f"{ref_stem}.jpg"
-    img.save(out_path, "JPEG", quality=80)
+    # if necessary, undistort and create copy. Otherwise create symlink
+    undistorted = intr.get("undistorted", False)
+    if undistorted:
+        out_path.symlink_to(src_path)
+    else:
+        img = Image.open(src_path).convert("RGB")
+        img_np = np.array(img, dtype=np.uint8)
+        img_np = _undistort_image(img_np, intr)
+        img = Image.fromarray(img_np)
+
+        out_path = out_dir / f"{ref_stem}.jpg"
+        img.save(out_path, "JPEG", quality=80)
 
 def write_calibrations(intr:dict, extr:dict, cam_names:list[str], out_dir: Path,):
     for cam_name in cam_names:
@@ -244,9 +251,16 @@ def build_calib_sustech(camera_name:str, intr: dict, extr: dict)->dict:
         raise KeyError(f"Missing extrinsic calibration for camera: {camera_name}")
     T_opt_to_ref = np.eye(4, dtype=np.float64)
     if T_raw is not None:
-        T = np.array(T_raw, dtype=np.float64)   # T_cam_body -> reference
-        T_opt_to_ref[:3, :3] = T[:3, :3] @ _CAM_BODY_TO_OPT.T   
-        T_opt_to_ref[:3, 3] = T[:3, 3]
+        T = np.array(T_raw, dtype=np.float64)   # T_cam_frame -> reference
+        if cam_intr.get("is_optical",False):
+            logger.info("Optical FRAME")
+            # camera frame is already in optical
+            T_opt_to_ref = T
+        else:
+            # convert from body frame to optical
+            T_opt_to_ref[:3, :3] = T[:3, :3] @ _CAM_BODY_TO_OPT.T   
+            T_opt_to_ref[:3, 3] = T[:3, 3]
+        
         T_ref_to_opt = np.linalg.inv(T_opt_to_ref) #reference -> T_cam_body (direction needed by sustechpoint)
     else:
         logger.warning(
@@ -352,10 +366,20 @@ def main() -> None:
        _, output_camera_dirs, output_calib_dir = create_ls_camera_dirs(dataset_root, cam_names)
        write_calibrations(intrinsics, extrinsics, cam_names, output_calib_dir)
 
+       cam_keys = camera_map.keys()
+       for cam_key in cam_keys:
+            if intrinsics[camera_map[cam_key]].get("undistored",False):
+                logger.info(f"[LabSes] {camera_map[cam_key]} is undistorted, create symlink")
+            else:
+                logger.info(f"[LabSes] {camera_map[cam_key]} is distorted, undistort and copy")
 
-    print(f"Found {len(timestamp_rows)} timestamp entries.")
-    print(f"Writing merged lidar to: {output_lidar_dir}")
-    print(f"Writing labels to: {output_labels_dir}")
+    logger.info(f"Found {len(timestamp_rows)} timestamp entries.")
+    logger.info(f"Found {len(lidar_keys)} lidars.")
+    logger.info(f"Writing labels to: {output_labels_dir}")
+    logger.info(f"Writing merged lidar to: {output_lidar_dir}")
+
+    if len(lidar_keys) ==1:
+        logger.info("Single lidar found, creating symlink...")
 
     n_frames = len(timestamp_rows)
 
@@ -366,19 +390,34 @@ def main() -> None:
             continue
         output_pcd_path = output_lidar_dir / f"{ref_stem}.pcd"
 
-        # merge pointclouds
+        # merge pointclouds, if multiple lidars are present
+        # if not, symlink pointcloud
         if output_pcd_path.is_file() and not args.overwrite:
             logger.warning("Skipping existing lidar %s:" ,output_pcd_path)
         else:
-            merged = _merge_and_transform(row, lidar_keys, dataset_root, lidar_extrinsics, to_xyz_bin)
-            if len(merged) == 0:
-                logger.warning("[LabelSes] Empty merged point cloud written to: %s", output_pcd_path)
-            _write_pcd(output_pcd_path, merged)
+            if len(lidar_keys) ==1:
+                lidar_key = lidar_keys[0]
+                ts_str = row.get(lidar_key, "").strip()
+                if not ts_str:
+                    logger.warning("[LabSes] Missing timestamp for %s - skipping sensor.", lidar_key)
+                    continue
+        
+                pcd_path = os.path.join(dataset_root, "samples", lidar_key, f"{ts_str}.pcd")
+                if not os.path.isfile(pcd_path):
+                    logger.warning("[PcdReader] PCD file not found: %s - skipping.", pcd_path)
+                    continue
+                output_pcd_path.symlink_to(pcd_path)
+            else:
+                merged = _merge_and_transform(row, lidar_keys, dataset_root, lidar_extrinsics, to_xyz_bin)
+                if len(merged) == 0:
+                    logger.warning("[LabelSes] Empty merged point cloud written to: %s", output_pcd_path)
+                _write_pcd(output_pcd_path, merged)
 
         # process label (add annotator and save it in the labelling session)
         process_label(ref_stem, input_labels_dir, output_labels_dir, args.overwrite, args.raw_labels)
 
-        # undistort and save new cameras in labelling session
+        # undistort and save new cameras in labelling session if needed,
+        # else create symlink
         if args.with_cam:
             cam_keys = camera_map.keys()
             for out_cam_dir, cam_key in zip(output_camera_dirs, cam_keys):

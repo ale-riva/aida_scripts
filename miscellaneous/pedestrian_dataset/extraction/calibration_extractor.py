@@ -83,9 +83,11 @@ def _parse_camera_intrinsics(yaml_path: str) -> Dict[str, dict]:
         if not cam_key.startswith("CAM_"):
             continue
 
-        name       = cam_data["NAME"]
-        k          = cam_data["K"]
-        model_type = cam_data.get("MODEL_TYPE", "PINHOLE").upper()
+        name        = cam_data["NAME"]
+        k           = cam_data["K"]
+        model_type  = cam_data.get("MODEL_TYPE", "PINHOLE").upper()
+        undistorted = cam_data.get("UNDISTORTED", False)
+        is_optical = cam_data.get("IS_OPTICAL", False)
 
         entry: dict = {
             "frame_id":   cam_data["FRAME_ID"],
@@ -97,6 +99,8 @@ def _parse_camera_intrinsics(yaml_path: str) -> Dict[str, dict]:
             "cy":         float(k["CY"]),
             "width":      int(cam_data["FRAME_DIM"][0]),
             "height":     int(cam_data["FRAME_DIM"][1]),
+            "undistorted": undistorted,
+            "is_optical":  is_optical
         }
 
         if model_type == "FISHEYE":

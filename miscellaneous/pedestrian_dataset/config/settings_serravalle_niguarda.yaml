@@ -20,16 +20,24 @@ cameras:
     frame_id: "lucid_cam_front_center"
     name: "camera_front_center"
     compressed: true
+    undistorted: true
+    is_optical: true   # if frame is in optical convention (x right, y down, z forward)
   camera_1:
     topic: "/lucid_vision/lucid_cam_front_left/image_rect/compressed"
     frame_id: "lucid_cam_front_left"
     name: "camera_front_left"
     compressed: true
+    undistorted: true
+    is_optical: true   # if frame is in optical convention (x right, y down, z forward)
+
   camera_2:
     topic: "/lucid_vision/lucid_cam_front_right/image_rect/compressed"
     frame_id: "lucid_cam_front_right"
     name: "camera_front_right"
     compressed: true
+    undistorted: true
+    is_optical: true   # if frame is in optical convention (x right, y down, z forward)
+
 
 # Topic and frame pair used to extract ego pose for each matched group.
 ego_pose:

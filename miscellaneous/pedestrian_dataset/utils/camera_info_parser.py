@@ -31,6 +31,8 @@ def _parse_camera_info(message, camera) -> dict:
         "model_type": "PINHOLE", "fx": float(k[0]), "fy": float(k[4]),
         "cx": float(k[2]), "cy": float(k[5]),
         "width": int(message.width), "height": int(message.height),
+        "undistorted": camera.undistorted,
+        "is_optical": camera.is_optical
     }
     model = message.distortion_model.lower()
     if model == "equidistant":

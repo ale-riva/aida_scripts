@@ -34,6 +34,8 @@ class CameraConfig:
     frame_id: str
     name: str           # human-readable sensor name (e.g. "camera_cl")
     compressed: bool    # True -> sensor_msgs/CompressedImage, False -> sensor_msgs/Image
+    undistorted: bool   # True -> image already undistorted, False -> distorted
+    is_optical: bool    # True -> (x right, y down, z forward), False -> (x forward, y left, z up)
     camera_info_topic: Optional[str] = None  # inferred from the image namespace when omitted
 
 
@@ -304,6 +306,8 @@ def _parse_cameras(cameras_raw: dict) -> List[CameraConfig]:
             frame_id=_require(entry, "frame_id", f"cameras.{key}"),
             name=_require(entry, "name", f"cameras.{key}"),
             compressed=entry.get("compressed", True),
+            undistorted=entry.get("undistorted", False),
+            is_optical=entry.get("is_optical", False),
             camera_info_topic=entry.get("camera_info_topic"),
         ))
     return cameras
