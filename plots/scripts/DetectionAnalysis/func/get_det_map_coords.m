@@ -1,5 +1,5 @@
-function [lid_det_map] = load_perception_map(lid_det, ego_pose, urdf_tree)
-% LOAD_PERCEPTION_MAP  Express relative detections in the vehicle-state frame.
+function [lid_det_map] = get_det_map_coords(lid_det, ego_pose, urdf_tree)
+% GET_DET_MAP_COORDS  Express relative detections in the vehicle-state frame.
 %
 %   Map coordinates are stored in x_map, y_map and z_map. Relative fields
 %   are preserved. If 3D boxes exist, their map vertices are in bbox_map.

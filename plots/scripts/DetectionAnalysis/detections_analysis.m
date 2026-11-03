@@ -51,10 +51,15 @@ ego = load_vehicle_state(log);
 
 % Detection loading
 lid_det = load_perception(log);
-lid_det = load_perception_map(lid_det,ego,tree);
-ped_det = filter_by_class(lid_det, 0);
+lid_det = get_det_map_coords(lid_det,ego,tree);
+ped_det = filter_det_by_class(lid_det, 0);
 ped_det = build_3d_bbox(ped_det);
 ped_det.frame_id_rel = lid_det.frame_id_rel;
+
+
+% Target Tracking
+tt = load_tt(log);
+ped_tt = filter_tt_by_class(tt, 0);
 
 sensors = { ...
     struct('s', lid_det, 'name', 'LD'), ...

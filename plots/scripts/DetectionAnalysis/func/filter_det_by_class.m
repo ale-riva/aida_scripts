@@ -1,4 +1,4 @@
-function out = filter_by_class(det_struct, class_ids)
+function out = filter_det_by_class(det_struct, class_ids)
 %FILTER_BY_CLASS Filter detections by class and compact each message.
 %
 % Rows represent messages, columns represent detections.
