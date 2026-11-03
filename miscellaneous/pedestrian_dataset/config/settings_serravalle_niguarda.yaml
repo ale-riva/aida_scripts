@@ -38,6 +38,14 @@ cameras:
     undistorted: true
     is_optical: true   # if frame is in optical convention (x right, y down, z forward)
 
+  camera_3:
+    topic: "/lucid_vision/lucid_cam_rear_center/image_rect/compressed"
+    frame_id: "lucid_cam_rear_center"
+    name: "camera_rear_center"
+    compressed: true
+    undistorted: true
+    is_optical: true   # if frame is in optical convention (x right, y down, z forward)
+
 
 # Topic and frame pair used to extract ego pose for each matched group.
 ego_pose:
