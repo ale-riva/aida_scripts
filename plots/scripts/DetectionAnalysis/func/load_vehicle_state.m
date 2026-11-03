@@ -14,7 +14,7 @@ function ego_pose = load_vehicle_state(log)
     stamp_field = "stamp";
     % sens_stamp_field = "sensor_stamp__tot";
    
-    topic = 'estimation__ekf__vehicle_state';
+    topic = 'estimation__odom__vehicle_state';
     if isfield(log,topic)
         vs = log.(topic);
                     
