@@ -34,6 +34,7 @@ class CameraConfig:
     frame_id: str
     name: str           # human-readable sensor name (e.g. "camera_cl")
     compressed: bool    # True -> sensor_msgs/CompressedImage, False -> sensor_msgs/Image
+    camera_info_topic: Optional[str] = None  # inferred from the image namespace when omitted
 
 
 @dataclass
@@ -50,14 +51,15 @@ class ClusterConfig:
     detection_topic: str
     output_base_dir: str
     on_existing: str
-    tolerance_ms: float
     ego_pose: EgoPoseConfig
-    ego_pose_tolerance_ms: float
+    matching: MatchingConfig
     target_classes: Optional[List[int]] = None
     lidar_key: str = "lidar"
     urdf_path: str = "from_tf_static"
     reference_frame: Optional[str] = None
     lidar_frame_id: Optional[str] = None
+    cameras: List[CameraConfig] = field(default_factory=list)
+    calibration_yaml: Optional[str] = None
 
 
 @dataclass
@@ -143,27 +145,38 @@ class PipelineConfig:
 # Public API
 # ---------------------------------------------------------------------------
 
-def load_cluster_config(yaml_path: str) -> ClusterConfig:
+def load_cluster_config(yaml_path: str, include_cameras: bool = False) -> ClusterConfig:
     """Load the detection-driven Stage-1 config used by main.py --from_det."""
     with open(yaml_path, "r") as fh:
         raw = yaml.safe_load(fh)
 
     inp = _require(raw, "input", "root")
     out = _require(raw, "output", "root")
-    match = _require(raw, "matching", "root")
-    tolerance_ms = float(_require(match, "tolerance_ms", "matching"))
-    if not 0 <= tolerance_ms < float("inf"):
-        raise ValueError("Config: matching.tolerance_ms must be finite and nonnegative")
-    ego_pose_tolerance_ms = float(match.get("ego_pose_tolerance_ms", tolerance_ms))
-    if not 0 <= ego_pose_tolerance_ms < float("inf"):
-        raise ValueError("Config: matching.ego_pose_tolerance_ms must be finite and nonnegative")
-    target_classes = match.get("target_classes")
+    
+    # timestamp matching
+    match_raw = _require(raw, "matching", "root")
+    match_raw.update(raw.get("matching", {}))
+    tolerance_ms = match_raw.get("tolerance_ms", "-1.0")
+    if not 0 < tolerance_ms < float('inf'):
+        raise ValueError("Config: matching.tolerance_ms must be in [0, inf]")
+    sampling_ms = match_raw.get("sampling_ms", "-1.0")
+    if not 0 < sampling_ms < float('inf'):
+        raise ValueError("Config: matching.sampling_ms must be in [0, inf]")
+    ego_pose_tolerance_ms = match_raw.get("ego_pose_tolerance_ms", "-1.0")
+    if not 0 < ego_pose_tolerance_ms < float('inf'):
+        raise ValueError("Config: matching.ego_pose_tolerance_ms must be in [0, inf]")
+    sampling_ms = match_raw.get(tolerance_ms, "-1.0")
+
+    # Target classes
+    target_classes = out.get("target_classes")
     if target_classes is not None:
-        if not isinstance(target_classes, list) or any(
+        if not isinstance(target_classes, list):
+            raise ValueError("Config: out.target_classes must be a list")
+        elif len(target_classes)>1 and any(
             type(class_id) is not int or not 0 <= class_id <= 255
             for class_id in target_classes
         ):
-            raise ValueError("Config: matching.target_classes must be a list of integer class IDs (0-255) or null")
+            raise ValueError("Config: out.target_classes must be a list of integer class IDs (0-255) or [-1]")
     settings = {}
     if "vehicle" in raw:
         settings, _ = _load_vehicle_settings(raw, yaml_path)
@@ -184,11 +197,17 @@ def load_cluster_config(yaml_path: str) -> ClusterConfig:
     if lidar_topic is None:
         lidar_topic = _require(inp, "lidar_topic", "input")
 
+    # Ego pose 
     ego_pose_raw = dict(settings.get("ego_pose", {}))
     ego_pose_raw.update(raw.get("ego_pose", {}))
+
     policy = out.get("on_existing", "skip")
     if policy not in ("skip", "overwrite", "abort"):
         raise ValueError(f"Config: output.on_existing must be skip|overwrite|abort, got '{policy}'")
+
+    cameras = _parse_cameras(settings.get("cameras", {})) if include_cameras else []
+    if include_cameras and not cameras:
+        raise ValueError("Config: --cameras requires cameras defined in vehicle.settings")
 
     return ClusterConfig(
         bag_dir=os.path.expanduser(_require(inp, "bag_dir", "input")),
@@ -196,18 +215,23 @@ def load_cluster_config(yaml_path: str) -> ClusterConfig:
         detection_topic=_require(inp, "detection_topic", "input"),
         output_base_dir=os.path.expanduser(_require(out, "base_dir", "output")),
         on_existing=policy,
-        tolerance_ms=tolerance_ms,
         ego_pose=EgoPoseConfig(
             topic=_require(ego_pose_raw, "topic", "ego_pose"),
             parent_frame=_require(ego_pose_raw, "parent_frame", "ego_pose"),
             child_frame=_require(ego_pose_raw, "child_frame", "ego_pose"),
         ),
-        ego_pose_tolerance_ms=ego_pose_tolerance_ms,
+        matching=MatchingConfig(
+            tolerance_ms=tolerance_ms,
+            sampling_interval_ms=sampling_ms,
+            ego_pose_tolerance_ms=ego_pose_tolerance_ms
+        ),
         target_classes=target_classes,
         lidar_key=lidar_key,
         urdf_path=_resolve_calibration_path(inp.get("urdf_path") or "from_tf_static", yaml_path),
         reference_frame=settings.get("reference_frame", ego_pose_raw.get("child_frame")),
         lidar_frame_id=lidar_frame_id,
+        cameras=cameras,
+        calibration_yaml=_resolve_camera_calibration(inp, yaml_path) if include_cameras else None,
     )
 
 
@@ -259,10 +283,30 @@ def _require(d: dict, key: str, section: str):
 
 
 def _resolve_calibration_path(path: str, yaml_path: str) -> str:
-    if path == "from_tf_static":
+    if path in ("from_tf_static", "from_camera_info"):
         return path
     path = os.path.expanduser(path)
     return path if os.path.isabs(path) else os.path.join(os.path.dirname(os.path.abspath(yaml_path)), path)
+
+
+def _resolve_camera_calibration(inp: dict, yaml_path: str) -> Optional[str]:
+    source = inp.get("calibration_yaml")
+    return _resolve_calibration_path(source, yaml_path) if source else None
+
+
+def _parse_cameras(cameras_raw: dict) -> List[CameraConfig]:
+    cameras: List[CameraConfig] = []
+    for key in sorted(cameras_raw.keys()):
+        entry = cameras_raw[key]
+        cameras.append(CameraConfig(
+            key=key,
+            topic=_require(entry, "topic", f"cameras.{key}"),
+            frame_id=_require(entry, "frame_id", f"cameras.{key}"),
+            name=_require(entry, "name", f"cameras.{key}"),
+            compressed=entry.get("compressed", True),
+            camera_info_topic=entry.get("camera_info_topic"),
+        ))
+    return cameras
 
 
 def _load_vehicle_settings(raw: dict, yaml_path: str) -> tuple[dict, str]:
@@ -312,16 +356,7 @@ def _parse(raw: dict, settings: dict, yaml_path: str, settings_path: str) -> Pip
 
     ## Cameras
     cameras_raw = _require(settings, "cameras", f"settings ({settings_path})")
-    cameras: List[CameraConfig] = []
-    for key in sorted(cameras_raw.keys()):
-        entry = cameras_raw[key]
-        cameras.append(CameraConfig(
-            key=key,
-            topic=_require(entry, "topic", f"cameras.{key}"),
-            frame_id=_require(entry, "frame_id", f"cameras.{key}"),
-            name=_require(entry, "name", f"cameras.{key}"),
-            compressed=entry.get("compressed", True),
-        ))
+    cameras = _parse_cameras(cameras_raw)
 
     ## Ego pose
     ego_pose_raw = _require(settings, "ego_pose", f"settings ({settings_path})")
@@ -395,7 +430,7 @@ def _parse(raw: dict, settings: dict, yaml_path: str, settings_path: str) -> Pip
 
     return PipelineConfig(
         bag_dir              = _require(inp, "bag_dir",          "input"),
-        calibration_yaml     = _resolve_calibration_path(inp["calibration_yaml"], yaml_path) if inp.get("calibration_yaml") else None,
+        calibration_yaml     = _resolve_camera_calibration(inp, yaml_path),
         urdf_path            = _resolve_calibration_path(inp.get("urdf_path") or "from_tf_static", yaml_path),
         output_base_dir      = _require(out, "base_dir",         "output"),
         on_existing          = policy,

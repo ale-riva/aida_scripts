@@ -7,6 +7,7 @@ Usage
     python main.py --config config/config_minerva.yaml --stage 1
     python main.py --config config/clusters.yaml --stage 1 --from_det
     python main.py --config config/clusters.yaml --stage 1 --from_det --cluster
+    python main.py --config config/clusters.yaml --stage 1 --from_det --cameras
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from extraction.lidar_extractor import extract_lidar_frame, build_lidar_output_p
 from extraction.camera_extractor import extract_camera_frame, build_camera_output_path
 from extraction.calibration_extractor import extract_calibration, load_tf_static_from_parser
 from utils.tf_static_parser import TFStaticParser
+from utils.camera_info_parser import CameraInfoParser, load_camera_info_from_parser
 from extraction.ego_pose_extractor import load_ego_poses_from_parser, find_ego_pose_at
 from extraction.inspection_metadata_writer import write_inspection_config
 from file_writer.csv_writer import write_csv
@@ -115,6 +117,7 @@ def run_stage1(config) -> str:
     ego_ts_chunks: list = []
     ego_pose_chunks: list = []
     static_transforms = TFStaticParser() if config.urdf_path == "from_tf_static" else None
+    camera_info = CameraInfoParser(config.cameras) if config.calibration_yaml == "from_camera_info" else None
 
     for fname in files:  #TODO: optimize the loop by only opening each file once
         fpath = os.path.join(bag_dir, fname)
@@ -148,6 +151,8 @@ def run_stage1(config) -> str:
             ego_pose_chunks.append(file_ego_poses)
         if static_transforms is not None:
             load_tf_static_from_parser(parser, static_transforms)
+        if camera_info is not None:
+            load_camera_info_from_parser(parser, camera_info)
 
     # Merge ego pose chunks from all files into one sorted array
     if ego_ts_chunks:
@@ -273,6 +278,7 @@ def run_stage1(config) -> str:
         sensor_links      = sensor_links,
         camera_frame_ids  = camera_frame_ids,
         tf_static         = static_transforms,
+        camera_info       = camera_info,
     )
 
     write_inspection_config(config, stage1_out)
@@ -319,10 +325,10 @@ def _parse_args():
     )
     parser.add_argument("--stage", type=int, choices=[1, 2, 12], default=12, help="Which stage(s) to run: 1, 2, or 12 (both). Default: 12")
     parser.add_argument(
-        "--cameras", nargs="+", default=None, metavar="CAMERA_KEY",
-        help="KITTI only: cameras to include, by key, in interleaving order "
-             "(e.g. --cameras camera_0 camera_2). Overrides kitti.cameras in the "
-             "config. Default: all configured cameras.",
+        "--cameras", nargs="*", default=None, metavar="CAMERA_KEY",
+        help="With --from_det: export matched cameras (all configured cameras if no keys are supplied). "
+             "For KITTI: select cameras by key in interleaving order, overriding kitti.cameras "
+             "(e.g. --cameras camera_0 camera_2).",
     )
     args = parser.parse_args()
     if args.cluster and not args.from_det:
@@ -337,7 +343,9 @@ def main():
     if args.from_det:
         from extraction.cluster_extractor import run_detection_extraction
 
-        config = load_cluster_config(args.config)
+        config = load_cluster_config(args.config, include_cameras=args.cameras is not None)
+        if args.cameras is not None:
+            config.cameras = resolve_kitti_cameras(config.cameras, args.cameras)
         if os.path.isfile(config.bag_dir):
             files = [config.bag_dir]
         else:

@@ -1,10 +1,12 @@
 # Detection-driven Stage 1: python main.py --config config/clusters.yaml --stage 1 --from_det
 # Add --cluster to export selected-class clusters instead of full clouds.
+# Add --cameras to export time-matched images from the cameras in vehicle.settings.
 input:
   bag_dir: "/mnt/storage/AIDA/bags/2026-10-19/2026-10-19_16-24-06_normal"  # bag folder or a single .mcap / .db3 file
-  lidar_key: "lidar_center"  # entry in the settings file's lidars section
+  lidar_key: "lidar_center"  # entry in the settings file's lidars section TODO: remove
   detection_topic: "/perception/multimodal_3d_detections"
-  # calibration_yaml is only used for camera exports in the regular pipeline.
+  # Camera intrinsics for --cameras: CameraInfo topics or a YAML file path.
+  calibration_yaml: "from_camera_info"
   # calibration_yaml: "~/polimove_code/polimove_dev/src/common/config/param/camera_calibrations/camera_calibrations_eva.param.yaml"
   urdf_path: "from_tf_static"  # or a URDF file path; omitted defaults to /tf_static
 
@@ -12,11 +14,12 @@ vehicle:
   settings: "settings_serravalle_niguarda.yaml"  # relative to this config file
 
 output:
-  base_dir: "/mnt/storage/AIDA/bags/2026-10-19/2026-10-19_16-24-06_normal/pedestrian_dataset"  # direct root for samples/ or clusters/, labels/ and CSV files
+  target_classes: [0]  # meas_class IDs; omit/null for all classes, [-1] for all
+  base_dir: "/mnt/storage/AIDA/bags/2026-10-19/2026-10-19_16-24-06_normal/pedestrian_dataset_wcam"  # direct root for samples/ or clusters/, labels/ and CSV files
   on_existing: "skip"  # skip | overwrite | abort
 
 matching:
-  target_classes: [0]  # meas_class IDs; omit/null for all classes, [] for none
-  tolerance_ms: 5.0  # maximum difference between cloud and detection header.stamp
+  sampling_ms:  1.0
+  tolerance_ms: 200.0  # maximum difference between cloud and detection header.stamp (should be the same)
   ego_pose_tolerance_ms: 5.0  # nearest-pose fallback beyond this tolerance, as in Stage 1
 

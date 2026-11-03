@@ -72,15 +72,26 @@ def extract_camera_frame(
 
     _, img_msg = messages[0]
 
+    return write_camera_frame(img_msg, out_path, compressed, on_existing)
+
+
+def write_camera_frame(img_msg, out_path: str, compressed: bool = True, on_existing: str = "skip") -> bool:
+    """Decode an already-read camera message and save it as PNG."""
+    if os.path.exists(out_path):
+        if on_existing == "skip":
+            logger.debug("Skipping existing file: %s", out_path)
+            return False
+        elif on_existing == "abort":
+            raise FileExistsError(f"Output file already exists: {out_path}")
+
     cv_image = _decode_compressed(img_msg) if compressed else _decode_raw(img_msg)
 
     if cv_image is None:
-        logger.warning("Failed to decode image for topic %s at ts=%d", topic, timestamp_ns)
+        logger.warning("Failed to decode image for %s", out_path)
         return False
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    cv2.imwrite(out_path, cv_image)
-    return True
+    return bool(cv2.imwrite(out_path, cv_image))
 
 
 def build_camera_output_path(output_base_dir: str, bag_stem: str, camera_key: str, timestamp_ns: int) -> str:

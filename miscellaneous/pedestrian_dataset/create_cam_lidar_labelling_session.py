@@ -234,16 +234,17 @@ def build_calib_sustech(camera_name:str, intr: dict, extr: dict)->dict:
     camera_name: camera_fl, camera_fr, camera_cl, ...
     """
 
-    if camera_name not in extr:
-        raise KeyError(f"Missing extrinsic calibration for camera: {camera_name}")
-
     if camera_name not in intr:
         raise KeyError(f"Missing intrinsic calibration for camera: {camera_name}")
 
-    T_raw = extr.get(camera_name)
+    cam_intr = intr[camera_name]
+    frame_id = cam_intr.get("frame_id", camera_name)
+    T_raw = extr.get(frame_id, extr.get(camera_name))
+    if T_raw is None:
+        raise KeyError(f"Missing extrinsic calibration for camera: {camera_name}")
     T_opt_to_ref = np.eye(4, dtype=np.float64)
     if T_raw is not None:
-        T = np.array(extr.get(camera_name), dtype=np.float64)   # T_cam_body -> reference
+        T = np.array(T_raw, dtype=np.float64)   # T_cam_body -> reference
         T_opt_to_ref[:3, :3] = T[:3, :3] @ _CAM_BODY_TO_OPT.T   
         T_opt_to_ref[:3, 3] = T[:3, 3]
         T_ref_to_opt = np.linalg.inv(T_opt_to_ref) #reference -> T_cam_body (direction needed by sustechpoint)
@@ -256,8 +257,6 @@ def build_calib_sustech(camera_name:str, intr: dict, extr: dict)->dict:
         raise ValueError(
             f"Extrinsic for {camera_name} must have shape (4, 4), got {T.shape}"
         )
-
-    cam_intr = intr[camera_name]
 
     if cam_intr:
         K_new = _optimal_undistorted_K(cam_intr)
@@ -325,7 +324,7 @@ def main() -> None:
     # Resolve input labels directory
     input_labels_dir = args.labels_dir
     if input_labels_dir is None:
-        input_labels_dir = dataset_root / "labels" / "lidar"
+        input_labels_dir = dataset_root / "labels"
     else:
         input_labels_dir = input_labels_dir.resolve()
 
@@ -334,6 +333,10 @@ def main() -> None:
     
     # Load camera name mapping
     camera_map = load_camera_name_map(args.car_name, settings)
+    camera_map = {
+        key: name for key, name in camera_map.items()
+        if any(row.get(key, "").strip() for row in timestamp_rows)
+    }
 
     # Load stage1 info
     calibration = _load_calibration(dataset_root)

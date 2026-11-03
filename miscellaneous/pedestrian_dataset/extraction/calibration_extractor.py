@@ -3,6 +3,7 @@ Calibration extraction and conversion.
 
 Reads:
   - camera_calibrations_<robot>.param.yaml  ->  intrinsics (K, distortion, frame dims)
+  - recorded CameraInfo topics             ->  the same intrinsics schema
   - <robot>.urdf or /tf_static               ->  extrinsics (sensor poses via chained transforms)
 
 Produces:
@@ -25,6 +26,7 @@ import yaml
 
 from utils.UrdfParser import URDFParser
 from utils.tf_static_parser import TFStaticParser
+from utils.camera_info_parser import CameraInfoParser
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +134,7 @@ def _validate(
     Cross-check cameras present in URDF extrinsics against the intrinsics file.
     """
     extrinsic_keys = set(extrinsics.keys())
-    intrinsic_cams = set(intrinsics.keys())
+    intrinsic_cams = {entry.get("frame_id", name) for name, entry in intrinsics.items()}
 
     if camera_frame_ids is not None:
         config_cams = set(camera_frame_ids)
@@ -183,6 +185,7 @@ def extract_calibration(
     sensor_links: Optional[List[str]] = None,
     camera_frame_ids: Optional[List[str]] = None,
     tf_static: Optional[TFStaticParser] = None,
+    camera_info: Optional[CameraInfoParser] = None,
 ) -> dict:
     """
     Parse URDF or recorded static transforms, produce a unified calibration dict, and write
@@ -190,12 +193,13 @@ def extract_calibration(
 
     Parameters
     urdf_path             : path to the car URDF file, or "from_tf_static".
-    intrinsics_yaml_path  : camera intrinsics YAML; optional when no cameras are exported.
+    intrinsics_yaml_path  : camera intrinsics YAML or "from_camera_info"; optional without cameras.
     stage1_out            : directory where calibration.yaml is written.
     reference_frame       : used as the common reference for all extrinsic matrices.
     sensor_links          : explicit list of URDF link names to compute extrinsics for.
     camera_frame_ids      : subset of "sensor_links" that are cameras; used only to produce more precise validation warnings.
     tf_static             : accumulated /tf_static transforms when urdf_path is "from_tf_static".
+    camera_info           : recorded camera calibration when intrinsics_yaml_path is "from_camera_info".
 
     Returns
     dictionary with keys:
@@ -231,7 +235,12 @@ def extract_calibration(
 
     intrinsics = {}
     if camera_frame_ids != [] and intrinsics_yaml_path:
-        intrinsics = _parse_camera_intrinsics(intrinsics_yaml_path)
+        if intrinsics_yaml_path == "from_camera_info":
+            if camera_info is None:
+                raise ValueError("from_camera_info requires CameraInfo messages loaded from the input bag")
+            intrinsics = camera_info.get_intrinsics(camera_frame_ids)
+        else:
+            intrinsics = _parse_camera_intrinsics(intrinsics_yaml_path)
         _validate(extrinsics, intrinsics, camera_frame_ids=camera_frame_ids)
     elif camera_frame_ids:
         raise ValueError("input.calibration_yaml is required when cameras are exported")
