@@ -1,53 +1,39 @@
 function out = filter_det_by_class(det_struct, class_ids)
-%FILTER_BY_CLASS Filter detections by class and compact each message.
-%
-% Rows represent messages, columns represent detections.
-% The output preserves the number of messages and reduces the number
-% of columns to the maximum number of simultaneous filtered detections.
+    % FILTER_DET_BY_CLASS  Filter detections by class without compacting.
+    %
+    % Rows represent messages, columns represent detections.
+    % The output preserves the original matrix dimensions.
+    % Detections not belonging to the specified classes are set to NaN.
 
-% Identify detections to keep
-to_keep = ismember(det_struct.class, class_ids) & ~isnan(det_struct.x_cog);
+    % Identify detections to keep
+    to_keep = ismember(det_struct.class, class_ids);
 
-% Compute detection counts
-n_msgs = size(det_struct.class, 1);
-out.count = sum(to_keep, 2);
-out.max_det = max([0; out.count]);
+    % Copy original struct
+    out = det_struct;
 
-% Compute new column indices for each detection
-new_cols = cumsum(to_keep, 2);
+    % Update detection counts
+    out.count = sum(to_keep, 2);
+    out.max_det = max([0; out.count]);
 
-% Compute linear indices in the compacted arrays
-[rows, ~] = find(to_keep);
+labbel    % Fields to filter
+    fields = {'x_map', 'y_map', 'z_map', 'roll_map', 'pitch_map', 'orientation_map', ...
+              'x_cog', 'y_cog', 'z_cog', 'orientation', ...
+              'height', 'width', 'length', 'score', 'class', 'id'};
 
-if out.max_det > 0
-    dst_idx = sub2ind([n_msgs, out.max_det], rows, new_cols(to_keep));
-else
-    dst_idx = [];
-end
+    % Filter each field without changing dimensions
+    for i = 1:numel(fields)
+        field = fields{i};
 
-% Fields to filter
-fields = { 'x_map', 'y_map', 'z_map', 'roll_map', 'pitch_map', 'orientation_map', ...
-           'x_cog', 'y_cog', 'z_cog', 'orientation', ...
-           'height', 'width','length', 'score', 'class', 'stamp'};
+        if ~isfield(det_struct, field)
+            continue;
+        end
 
-% Filter and compact each field
-for i = 1:numel(fields)
-    field = fields{i};
-    src = det_struct.(field);
+        src = det_struct.(field);
 
-    dst = nan(n_msgs, out.max_det);
+        % Set excluded detections to NaN
+        src(~to_keep) = NaN;
 
-    if strcmp(field, 'stamp') && ...
-            isvector(src) && numel(src) == n_msgs && ...
-            ~isequal(size(src), size(to_keep))
-        % One timestamp per message
-        dst(dst_idx) = src(rows);
-    else
-        % One value per detection
-        dst(dst_idx) = src(to_keep);
+        out.(field) = src;
     end
-
-    out.(field) = dst;
-end
 
 end
