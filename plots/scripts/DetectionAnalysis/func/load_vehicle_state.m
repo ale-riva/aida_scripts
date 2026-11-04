@@ -25,7 +25,7 @@ function ego_pose = load_vehicle_state(log)
         ego_pose.roll = rad2deg(replaceZeroWithNaN(vs.rot__roll));
         ego_pose.pitch = rad2deg(replaceZeroWithNaN(vs.rot__pitch));
 
-        ego_pose.stamp = vs.(stamp_field) - log.t0;
+        ego_pose.stamp = vs.(stamp_field);
         not_valid_idx = isnan(ego_pose.x);
         ego_pose.stamp(not_valid_idx)=nan;
         ego_pose.frame_id = vs.frame_id{1,1};

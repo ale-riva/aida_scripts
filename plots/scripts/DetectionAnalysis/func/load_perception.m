@@ -57,7 +57,7 @@ if isfield(log,topic)
     lid_det.length = replaceZeroWithNaN(d.meas_array__length);
     
     lid_det.score   = replaceZeroWithNaN(d.meas_array__score);
-    lid_det.class   = d.meas_array__meas_class;
+    lid_det.class   = double(d.meas_array__meas_class);
     % Padding has zero dimensions; zero coordinates and class IDs are valid.
     lid_det.x_cog(isnan(lid_det.height) | isnan(lid_det.width) | isnan(lid_det.length)) = NaN;
     lid_det.count    = getDetectionCount(d, lid_det.x_cog);
@@ -65,7 +65,6 @@ if isfield(log,topic)
 
     % Rows are messages; each detection inherits its message timestamp.
     lid_det.stamp = repmat(d.(sens_stamp_field)(:), 1, size(lid_det.x_cog, 2));
-    lid_det.stamp = (lid_det.stamp - log.t0);
     not_valid_idx = isnan(lid_det.x_cog);
     lid_det.stamp(not_valid_idx)=nan;
 else

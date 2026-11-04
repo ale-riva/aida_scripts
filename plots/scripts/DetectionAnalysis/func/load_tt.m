@@ -68,7 +68,6 @@ if isfield(log,topic)
     tt.stamp = repmat(t.(sens_stamp_field)(:), 1, size(tt.x_map, 2));
     tt.stamp = (tt.stamp - log.t0);
     tt.det_stamp = t.detection_cloud_stamp__nanosec + t.detection_cloud_stamp__sec*1e9;
-    tt.det_stamp = (tt.det_stamp - log.t0);
     not_valid_idx = isnan(tt.x_map);
     tt.stamp(not_valid_idx)=nan;
     tt.det_stamp(not_valid_idx)=nan;
