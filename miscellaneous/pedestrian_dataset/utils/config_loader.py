@@ -167,7 +167,6 @@ def load_cluster_config(yaml_path: str, include_cameras: bool = False) -> Cluste
     ego_pose_tolerance_ms = match_raw.get("ego_pose_tolerance_ms", "-1.0")
     if not 0 < ego_pose_tolerance_ms < float('inf'):
         raise ValueError("Config: matching.ego_pose_tolerance_ms must be in [0, inf]")
-    sampling_ms = match_raw.get(tolerance_ms, "-1.0")
 
     # Target classes
     target_classes = out.get("target_classes")

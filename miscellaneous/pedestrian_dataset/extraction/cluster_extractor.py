@@ -186,6 +186,17 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
         file_matches = cloud_detections.setdefault(cloud_path, {})
         file_matches.setdefault(cloud_number, []).append((timestamp_ns, detection_msg))
 
+    # Sample matched clouds by header timestamp, including across bag boundaries.
+    next_target = None
+    for timestamp_ns, _, cloud_path, cloud_number in lidar_index:
+        file_matches = cloud_detections.get(cloud_path, {})
+        if cloud_number not in file_matches:
+            continue
+        if next_target is not None and timestamp_ns < next_target:
+            del file_matches[cloud_number]
+            continue
+        next_target = timestamp_ns + int(config.matching.sampling_interval_ms * 1_000_000)
+
     # Match optional cameras to selected cloud headers, retaining only their locations.
     matched_cloud_ts = sorted({
         ts for ts, _, path, number in lidar_index
