@@ -327,24 +327,38 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _selected_detections(detection_msg, target_classes):
+def _active_detections(detection_msg):
     if not 0 <= detection_msg.count <= len(detection_msg.meas_array):
         raise ValueError("Detection count exceeds measurement array length")
+    return detection_msg.meas_array[:detection_msg.count]
+
+
+def _has_duplicate_ids(detections):
+    return len({int(detection.box_id) for detection in detections}) != len(detections)
+
+
+def _selected_detections(detection_msg, target_classes):
+    active = _active_detections(detection_msg)
+    use_local_ids = _has_duplicate_ids(active)
     detections = []
-    detection_ids = set()
-    for detection in detection_msg.meas_array[:detection_msg.count]:
+    for index, detection in enumerate(active):
         if target_classes is not None and detection.meas_class not in target_classes:
             continue
-        detection_id = int(detection.box_id)
-        if detection_id in detection_ids:
-            raise ValueError(f"Duplicate detection ID {detection_id} in detection message")
-        detection_ids.add(detection_id)
+        if use_local_ids:
+            # Index before filtering so IDs stay consistent across exports.
+            # Copy to leave the recorded message unchanged.
+            detection = copy(detection)
+            detection.box_id = index
         detections.append(detection)
     return detections
 
 
 def _frame_detections(matches, cloud_timestamp: int, target_classes):
-    """Keep the nearest observation of each ID when several messages match one cloud."""
+    """Merge unique IDs, or choose the nearest message for frame-local IDs."""
+    if any(_has_duplicate_ids(_active_detections(message)) for _, message in matches):
+        # Array indices cannot associate objects across messages. Use one
+        # complete observation instead of merging unrelated boxes by index.
+        matches = [min(matches, key=lambda item: (abs(item[0] - cloud_timestamp), item[0]))]
     selected = {}
     for detection_timestamp, detection_msg in matches:
         for detection in _selected_detections(detection_msg, target_classes):
