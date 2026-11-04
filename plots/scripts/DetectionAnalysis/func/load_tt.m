@@ -58,11 +58,14 @@ if isfield(log,topic)
     tt.yaw_map = t.track_array__dyn_state__rot__yaw;
     tt.id      = t.track_array__id;
 
+    tt.vx_cog      = t.track_array__dyn_state__vel__x;
+    tt.vy_cog      = t.track_array__dyn_state__vel__y;
+
 
     % Padding has zero dimensions; zero coordinates and class IDs are valid.
     tt.x_map(isnan(tt.height) | isnan(tt.width) | isnan(tt.length)) = NaN;
     tt.count    = getDetectionCount(t, tt.x_map);
-    tt.max_det = max(sum(~isnan(tt.x_map), 2));
+    tt.max_tracks = max(sum(~isnan(tt.x_map), 2));
 
     % Rows are messages; each detection inherits its message timestamp.
     tt.stamp = repmat(t.(sens_stamp_field)(:), 1, size(tt.x_map, 2));
@@ -72,7 +75,7 @@ if isfield(log,topic)
     tt.stamp(not_valid_idx)=nan;
     tt.det_stamp(not_valid_idx)=nan;
 else
-    tt.max_det = 1;
+    tt.max_tracks = 1;
 end
 
 
