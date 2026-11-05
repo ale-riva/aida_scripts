@@ -24,6 +24,7 @@ from extraction.lidar_extractor import _write_pcd, read_cloud_points, build_lida
 from file_writer.csv_writer import write_csv
 from file_writer.detection_label_writer import write_detection_labels
 from file_writer.detection_confidence_csv_writer import write_detection_confidence_csv
+from file_writer.detection_point_count_csv_writer import write_detection_point_count_csv
 from file_writer.ego_pose_csv_writer import write_ego_pose_csv
 from timestamp_matching.matcher import SampleGroup, _find_closest_within
 from utils.timestamp_utils import ns_to_filename
@@ -227,6 +228,7 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
     images_written = 0
     exported_camera_ts = {cam.key: set() for cam in config.cameras}
     frame_confidences = {}
+    frame_point_counts = {}
     calibration = None
     for fpath in files:
         file_matches = cloud_detections.get(fpath, {})
@@ -293,6 +295,15 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
                     written += _write_lidar_sample(cloud_msg, timestamp_ns, stage1_out, config.on_existing, config.lidar_key)
                 write_detection_labels(detections, timestamp_ns, stage1_out, config.on_existing, transform=lidar_to_reference)
                 frame_confidences[timestamp_ns] = {int(detection.box_id): float(detection.score) for detection, _ in detections}
+                frame_point_counts[timestamp_ns] = {}
+                if detections:
+                    points = read_cloud_points(cloud_msg)
+                    xyz = np.column_stack([points[name] for name in ("x", "y", "z")]).astype(np.float64)
+                    frame_point_counts[timestamp_ns] = {
+                        int(detection.box_id): int(np.count_nonzero(points_in_bbox(xyz, bbox)))
+                        for detection, bbox in detections
+                    }
+                    del points, xyz
                 del cloud_msg
                 if not file_matches and not file_camera_matches:
                     break
@@ -318,6 +329,7 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
         groups, ego_pose_results, ref_key, os.path.join(stage1_out, "ego_poses.csv"),
     )
     write_detection_confidence_csv(frame_confidences, os.path.join(stage1_out, "detection_confidences.csv"))
+    write_detection_point_count_csv(frame_point_counts, os.path.join(stage1_out, "detection_point_counts.csv"))
     logger.info("Detection extraction complete: %d PCD files, %d images written, %d unmatched messages",
                 written, images_written, unmatched)
     return stage1_out
