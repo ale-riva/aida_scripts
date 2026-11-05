@@ -6,13 +6,12 @@ import csv
 import logging
 import os
 
-from utils.timestamp_utils import ns_to_filename
 
 logger = logging.getLogger(__name__)
 
 
 def write_detection_point_count_csv(frame_point_counts: dict[int, dict[int, int]], out_path: str) -> None:
-    """Write stamp,detection_<id>,...; missing detections have empty cells."""
+    """Write stamp in seconds with nine decimal places; missing detections have empty cells."""
     if not frame_point_counts:
         logger.warning("No matched frames - detection_point_counts.csv will not be created.")
         return
@@ -22,6 +21,8 @@ def write_detection_point_count_csv(frame_point_counts: dict[int, dict[int, int]
         writer = csv.writer(fh)
         writer.writerow(["stamp"] + [f"detection_{detection_id}" for detection_id in detection_ids])
         for timestamp_ns in sorted(frame_point_counts):
+            seconds, nanoseconds = divmod(int(timestamp_ns), 1_000_000_000)
+            stamp = f"{seconds}.{nanoseconds:09d}"
             counts = frame_point_counts[timestamp_ns]
-            writer.writerow([ns_to_filename(timestamp_ns)] + [counts.get(detection_id, "") for detection_id in detection_ids])
+            writer.writerow([stamp] + [counts.get(detection_id, "") for detection_id in detection_ids])
     logger.info("Detection point-count CSV written: %s (%d rows)", out_path, len(frame_point_counts))
