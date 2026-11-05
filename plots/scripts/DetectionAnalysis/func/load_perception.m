@@ -29,7 +29,8 @@ emptyDetectionStruct = struct( ...
     'score', NaN, ...
     'height', NaN, ...
     'length', NaN, ...
-    'width', NaN ...
+    'width', NaN, ...
+    'pt_count', NaN ...
 );
 
 
@@ -63,10 +64,10 @@ if isfield(log,topic)
     lid_det.count    = getDetectionCount(d, lid_det.x_cog);
     lid_det.max_det = max(sum(~isnan(lid_det.x_cog), 2));
 
-    % Rows are messages; each detection inherits its message timestamp.
-    lid_det.stamp = repmat(d.(sens_stamp_field)(:), 1, size(lid_det.x_cog, 2));
-    not_valid_idx = isnan(lid_det.x_cog);
-    lid_det.stamp(not_valid_idx)=nan;
+    % One timestamp per message (Nx1).
+    lid_det.stamp = d.(sens_stamp_field)(:);
+
+    lid_det.pt_count = NaN;
 else
     lid_det = emptyDetectionStruct;
     lid_det.max_det = 1;

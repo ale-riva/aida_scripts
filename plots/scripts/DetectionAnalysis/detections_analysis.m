@@ -1,5 +1,5 @@
 close all; clc;
-clearvars -except colors log T_annot
+clearvars -except colors log T_annot T_counts
 
 use_manual_annotation = true;
 
@@ -20,6 +20,18 @@ if (~exist('log','var'))
     [file,path] = uigetfile(fullfile(normal_path,'*.mat'),'Load log');
     log = load(fullfile(path,file));
 end
+
+if (~exist('T_counts','var'))
+    [file,path] = uigetfile(fullfile(normal_path,'*.csv'),'Load det counts');
+        if isequal(file, 0)
+            return;
+        end
+
+        % Read CSV
+        filename = fullfile(path, file);
+        T_counts = readtable(filename);
+end
+
 name1 = 'new';
 load_detection_labels;
 
@@ -72,16 +84,20 @@ tree = urdfTree(urdf_file,feval(VEHICLE));
 % Vehicle state
 ego = load_vehicle_state(log);
 
+% point count
+pt_count = parse_table(T_counts,'pt_count');
+
 VIS_CLASSES = [0,6,7];
 
 % Detection loading
 lid_det = load_perception(log);
 lid_det = get_det_map_coords(lid_det,ego,tree);
+lid_det = update_struct(lid_det, pt_count);
 
 if (use_manual_annotation)
-    annot = load_manual_annotations_csv(T_annot);
+    annot = parse_table(T_annot,'class');
     % Match timestamps and corresponding class columns (M_annot <= M_lid_det).
-    lid_det = update_class(lid_det, annot);
+    lid_det = update_struct(lid_det, annot);
 end
 
 ped_det = filter_det_by_class(lid_det, VIS_CLASSES);
