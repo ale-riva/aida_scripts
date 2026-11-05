@@ -15,7 +15,7 @@ function out = filter_det_by_class(det_struct, class_ids)
     out.count = sum(to_keep, 2);
     out.max_det = max([0; out.count]);
 
-labbel    % Fields to filter
+    % Fields to filter
     fields = {'x_map', 'y_map', 'z_map', 'roll_map', 'pitch_map', 'orientation_map', ...
               'x_cog', 'y_cog', 'z_cog', 'orientation', ...
               'height', 'width', 'length', 'score', 'class', 'id'};
