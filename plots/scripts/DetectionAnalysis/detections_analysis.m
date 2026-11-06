@@ -121,6 +121,8 @@ sensors = { ...
 
 map;
 confidence;
+ptcount;
+ptcount_confidence;
 distance_histogram;
 statistics;
 link_axes();
