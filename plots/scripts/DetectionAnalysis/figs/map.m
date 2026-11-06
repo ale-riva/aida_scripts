@@ -1,7 +1,7 @@
 
 figure("Name","MAP",'NumberTitle','off');
 % MAP
-tiledlayout(1,2,'Padding','compact','TileSpacing','none')
+tiledlayout(1,2,'Padding','compact','TileSpacing','compact')
 confidence_map_axes = nexttile;
 
 % confidence map
