@@ -1,4 +1,4 @@
-close all; clc;
+close all;
 clearvars -except colors log T_annot T_counts
 
 use_manual_annotation = true;
@@ -58,7 +58,6 @@ col.det.TRUCK        = colors.red{2};
 col.det.BUS          = colors.purple{2};
 col.det.BICYCLE      = colors.yellow{2};
 col.det.MOTORCYCLE   = colors.orange{2};
-col.det.PED_SIGN     = colors.red{2};
 col.det.FP_PED       = colors.red{2};
 
 col.tt.PEDESTRIAN   = colors.blue{1};
@@ -87,7 +86,7 @@ ego = load_vehicle_state(log);
 % point count
 pt_count = parse_table(T_counts,'pt_count');
 
-VIS_CLASSES = [0,6,7];
+VIS_CLASSES = [0,6];
 
 % Detection loading
 lid_det = load_perception(log);
