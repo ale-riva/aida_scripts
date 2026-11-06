@@ -120,4 +120,5 @@ sensors = { ...
 %% PLOTTING
 
 map;
+confidence;
 link_axes();
