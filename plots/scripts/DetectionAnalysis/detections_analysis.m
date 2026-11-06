@@ -2,6 +2,7 @@ close all;
 clearvars -except colors log T_annot T_counts
 
 use_manual_annotation = true;
+keep_only_annotated_frames = true;
 
 VEHICLE = "serravalle_niguarda";
 
@@ -91,12 +92,12 @@ VIS_CLASSES = [0,6];
 % Detection loading
 lid_det = load_perception(log);
 lid_det = get_det_map_coords(lid_det,ego,tree);
-lid_det = update_struct(lid_det, pt_count);
+lid_det = update_struct(lid_det, pt_count, true);
 
 if (use_manual_annotation)
     annot = parse_table(T_annot,'class');
     % Match timestamps and corresponding class columns (M_annot <= M_lid_det).
-    lid_det = update_struct(lid_det, annot);
+    lid_det = update_struct(lid_det, annot, keep_only_annotated_frames);
 end
 
 ped_det = filter_det_by_class(lid_det, VIS_CLASSES);

@@ -1,12 +1,22 @@
-function [s1] = update_struct(s1, s2)
-% UPDATE_CLASS  Update matching struct fields by timestamp and column.
+function [s1] = update_struct(s1, s2, keep_only_matched)
+% UPDATE_STRUCT  Update matching struct fields by timestamp and column.
 %
 %   s2 must contain stamp and at least one other field, all present in s1.
 %   Fields have one row per timestamp; s2 cannot have more rows or columns.
 %   Stamps are column vectors. Per-detection stamps in s1 are also supported.
-%   Scalar NaN fields are expanded using the widest matching s1 field,
-%   or the widest s2 field when all matching s1 fields are scalar NaN.
+%   Scalar NaN fields are expanded using the width of s1.x_map, per-detection
+%   stamps or the widest matching s1 field. Otherwise, use the widest s2 field.
 %   Only non-NaN values in s2 overwrite s1. Unmatched values are preserved.
+%   keep_only_matched defaults to false. When true, retain only rows with
+%   at least one finite timestamp matching s2, even if its values are NaN.
+%   Filter all row-aligned numeric/logical fields, preserving column positions,
+%   frame identifiers, max_det and unexpanded scalar NaN placeholders.
+
+if nargin < 3
+    keep_only_matched = false;
+end
+validateattributes(keep_only_matched, {'logical','numeric'}, ...
+    {'scalar','binary'}, mfilename, 'keep_only_matched', 3);
 
 
 %  Check matching fields and timestamps
@@ -47,6 +57,14 @@ n_cols1 = [];
 n_cols2 = 0;
 if size(s1.stamp,2) > 1
     n_cols1 = size(s1.stamp,2);
+end
+if isfield(s1,'x_map') && isnumeric(s1.x_map) && ismatrix(s1.x_map) && ...
+        ~(isscalar(s1.x_map) && isnan(s1.x_map))
+    if size(s1.x_map,1) ~= n1
+        error('update_class:InvalidDimensions', ...
+            's1.x_map must have one row per timestamp.');
+    end
+    n_cols1(end+1) = size(s1.x_map,2);
 end
 
 for i = 1:numel(fields)
@@ -114,6 +132,29 @@ for i = 1:numel(fields)
     to_update = ~isnan(values);
     dst(dst_idx(to_update)) = values(to_update);
     s1.(field) = dst;
+end
+
+%  Remove unmatched rows consistently across all row-aligned fields
+
+if keep_only_matched
+    keep_rows = any(matched,2);
+    all_fields = fieldnames(s1);
+    metadata = {'max_det','frame_id','frame_id_rel','frame_id_map'};
+    for i = 1:numel(all_fields)
+        field = all_fields{i};
+        value = s1.(field);
+        if ismember(field,metadata) || ...
+                ~(isnumeric(value) || islogical(value)) || size(value,1) ~= n1
+            continue;
+        end
+        if isscalar(value) && isnan(value) && ...
+                ~strcmp(field,'stamp') && ~ismember(field,fields)
+            continue;
+        end
+        indices = repmat({':'},1,ndims(value));
+        indices{1} = keep_rows;
+        s1.(field) = value(indices{:});
+    end
 end
 
 end % FUNCTION END
