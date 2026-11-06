@@ -7,7 +7,7 @@ VEHICLE = "serravalle_niguarda";
 
 
 %% Paths
-normal_path = "/home/alessandro/adehome_aida/aida_code/bags";
+normal_path = "/home/alessandro/hurbie_storage/";
 scriptDir = fileparts(mfilename('fullpath'));
 addpath(fullfile(scriptDir,'func'));
 addpath(fullfile(scriptDir,'figs'));

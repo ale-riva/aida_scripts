@@ -1,17 +1,24 @@
 function [tt] = load_tt(log)
-% LOAD_PERCEPTION  Parse perception detections.
+% LOAD_TT  Parse target-tracking detections.
 %
-%   All detection structs are guaranteed to exist. Missing sources
-%   are replaced with empty structs containing NaN fields.
+%   Converts variable-length track cell arrays into NaN-padded
+%   matrices of size [N_messages x max_tracks].
+%
+%   All track fields are guaranteed to exist. Missing fields
+%   are replaced with NaN arrays.
+%
+%   Track validity is determined by the message count field.
+%   Timestamps are per-message columns, as in load_perception.
 
 
-%  Helper empty structs
-
+% Helper empty structs
 
 emptyTrackStruct = struct( ...
-    'stamp',NaN,...
-    'det_stamp',NaN,...
-    'frame_id',NaN, ...
+    'stamp', NaN, ...
+    'det_stamp', NaN, ...
+    'frame_id', NaN, ...
+    'frame_id_rel', "", ...
+    'frame_id_map', "", ...
     'id', NaN, ...
     'class', NaN, ...
     'x_cog', NaN, ...
@@ -26,56 +33,74 @@ emptyTrackStruct = struct( ...
     'yaw_map', NaN, ...
     'vx', NaN, ...
     'vy', NaN, ...
+    'vx_cog', NaN, ...
+    'vy_cog', NaN, ...
     'vx_map', NaN, ...
     'vy_map', NaN, ...
     'height', NaN, ...
     'length', NaN, ...
-    'width', NaN ...
+    'width', NaN, ...
+    'count', 0, ...
+    'max_tracks', 1 ...
 );
 
 
-sens_stamp_field = "stamp";
-% sens_stamp_field = "sensor_stamp__tot";
+% Configuration
 
-%  Target TRACKING DETECTIONS
 topic = 'perception__target_tracking__obstacles_list';
+sens_stamp_field = 'stamp';
+
+
+% Initialise output
+
 tt = emptyTrackStruct;
 
-if isfield(log,topic)
+if isfield(log, topic)
+
     t = log.(topic);
+
+    % Number of messages and tracks
+    n_msg = numel(t.(sens_stamp_field));
+
+    tt.count = double(t.count(:));
+    tt.max_tracks = max([1; tt.count]);
+
+    n_det = tt.max_tracks;
+
+    tt.stamp = t.(sens_stamp_field)(:);
+    tt.frame_id = t.frame_id{1,1};
     tt.frame_id_rel = " ";
-    tt.frame_id_map = t.frame_id{1,1};
-    
-    tt.height = replaceZeroWithNaN(t.track_array__height);
-    tt.width = replaceZeroWithNaN(t.track_array__width);
-    tt.length = replaceZeroWithNaN(t.track_array__length);
-    
-    tt.class   = t.track_array__label;
-    
-    tt.x_map   = t.track_array__dyn_state__pos__x;
-    tt.y_map   = t.track_array__dyn_state__pos__y;
-    tt.z_map   = t.track_array__dyn_state__pos__z;
-    tt.yaw_map = t.track_array__dyn_state__rot__yaw;
-    tt.id      = t.track_array__id;
+    tt.frame_id_map = tt.frame_id;
 
-    tt.vx_cog      = t.track_array__dyn_state__vel__x;
-    tt.vy_cog      = t.track_array__dyn_state__vel__y;
+    tt.id = unpackField(t, 'track_array__id', tt.count, n_msg, n_det);
+    tt.class = unpackField(t, 'track_array__label', tt.count, n_msg, n_det);
+    tt.x_map = unpackField(t, 'track_array__dyn_state__pos__x', tt.count, n_msg, n_det);
+    tt.y_map = unpackField(t, 'track_array__dyn_state__pos__y', tt.count, n_msg, n_det);
+    tt.z_map = unpackField(t, 'track_array__dyn_state__pos__z', tt.count, n_msg, n_det);
+    tt.yaw_map = unpackField(t, 'track_array__dyn_state__rot__yaw', tt.count, n_msg, n_det);
+    tt.vx_cog = unpackField(t, 'track_array__dyn_state__vel__x', tt.count, n_msg, n_det);
+    tt.vy_cog = unpackField(t, 'track_array__dyn_state__vel__y', tt.count, n_msg, n_det);
+    tt.height = unpackField(t, 'track_array__height', tt.count, n_msg, n_det);
+    tt.length = unpackField(t, 'track_array__length', tt.count, n_msg, n_det);
+    tt.width = unpackField(t, 'track_array__width', tt.count, n_msg, n_det);
 
+    tt.det_stamp = NaN(n_msg, 1);
+    if isfield(t, 'detection_cloud_stamp__sec') && isfield(t, 'detection_cloud_stamp__nanosec')
+        tt.det_stamp = double(t.detection_cloud_stamp__sec(:))*1e9 + ...
+            double(t.detection_cloud_stamp__nanosec(:));
+    end
 
-    % Padding has zero dimensions; zero coordinates and class IDs are valid.
-    tt.x_map(isnan(tt.height) | isnan(tt.width) | isnan(tt.length)) = NaN;
-    tt.count    = getDetectionCount(t, tt.x_map);
-    tt.max_tracks = max(sum(~isnan(tt.x_map), 2));
-
-    % Rows are messages; each detection inherits its message timestamp.
-    tt.stamp = repmat(t.(sens_stamp_field)(:), 1, size(tt.x_map, 2));
-    tt.stamp = (tt.stamp - log.t0);
-    tt.det_stamp = t.detection_cloud_stamp__nanosec + t.detection_cloud_stamp__sec*1e9;
-    not_valid_idx = isnan(tt.x_map);
-    tt.stamp(not_valid_idx)=nan;
-    tt.det_stamp(not_valid_idx)=nan;
-else
-    tt.max_tracks = 1;
+    % Initialise fields without source data
+    tt.x_cog = NaN(n_msg, n_det);
+    tt.y_cog = NaN(n_msg, n_det);
+    tt.z_cog = NaN(n_msg, n_det);
+    tt.roll = NaN(n_msg, n_det);
+    tt.pitch = NaN(n_msg, n_det);
+    tt.yaw = NaN(n_msg, n_det);
+    tt.vx = NaN(n_msg, n_det);
+    tt.vy = NaN(n_msg, n_det);
+    tt.vx_map = NaN(n_msg, n_det);
+    tt.vy_map = NaN(n_msg, n_det);
 end
 
 
