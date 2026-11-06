@@ -104,6 +104,9 @@ ped_det = filter_det_by_class(lid_det, VIS_CLASSES);
 ped_det = build_3d_bbox(ped_det);
 ped_det.frame_id_rel = lid_det.frame_id_rel;
 
+% Filter Detections
+% ped_det = filter_struct(ped_det, 'pt_count','>=10');
+% ped_det = filter_struct(ped_det, 'pt_count','<=1000');
 
 % Target Tracking
 full_tt = load_tt(log);
