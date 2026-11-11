@@ -100,6 +100,7 @@ if (use_manual_annotation)
     lid_det = update_struct(lid_det, annot, keep_only_annotated_frames);
 end
 
+% Extract selected classes
 ped_det = filter_det_by_class(lid_det, VIS_CLASSES);
 ped_det = build_3d_bbox(ped_det);
 ped_det.frame_id_rel = lid_det.frame_id_rel;
@@ -123,6 +124,7 @@ map;
 confidence;
 ptcount;
 ptcount_confidence;
+distance_confidence;
 distance_histogram;
 statistics;
 link_axes();
