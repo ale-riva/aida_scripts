@@ -1,7 +1,7 @@
 % Detection distance from the ego vehicle, using the matched map-frame pose.
-% Counts and per-range-bin medians refer to the current filtered detections.
+% Counts, medians and confidence percentiles use the current filtered detections.
 distance_figure = figure("Name","DISTANCE",'NumberTitle','off');
-tiledlayout(3,1,'Padding','compact');
+tiledlayout(2,1,'Padding','compact');
 
 class_names = fieldnames(DET_LABELS);
 class_ids = cellfun(@(name) DET_LABELS.(name),class_names);
@@ -67,8 +67,11 @@ ylabel("count [-]")
 grid on;
 legend show
 
-% Median confidence
+% Grouped 25th-75th percentile boxes, medians and 5th-95th percentile whiskers.
 ax_confidence_range = nexttile; hold on;
+bin_centers = (bin_edges(1:end-1) + bin_edges(2:end))/2;
+n_series = numel(sensors)*numel(class_names);
+series_width = 0.8*bin_width/max(1,n_series);
 for i = 1:numel(sensors)
     s = sensors{i}.s;
     distance = sensor_distances{i};
@@ -83,53 +86,74 @@ for i = 1:numel(sensors)
 
         [~, ~, range_bins] = histcounts(distance(class_idx),bin_edges);
         values = double(s.score(class_idx));
-        median_confidence = accumarray(range_bins(:),values(:),[n_bins 1],@mean,NaN);
+        median_confidence = accumarray(range_bins(:),values(:),[n_bins 1],@median,NaN);
+        lower_confidence = accumarray(range_bins(:),values(:),[n_bins 1], ...
+            @(v) prctile(v,5),NaN);
+        upper_confidence = accumarray(range_bins(:),values(:),[n_bins 1], ...
+            @(v) prctile(v,95),NaN);
+        lower_quartile = accumarray(range_bins(:),values(:),[n_bins 1], ...
+            @(v) prctile(v,25),NaN);
+        upper_quartile = accumarray(range_bins(:),values(:),[n_bins 1], ...
+            @(v) prctile(v,75),NaN);
 
-        % Extend the final bin to its right edge; empty bins remain gaps.
-        stairs( ...
-            bin_edges, [median_confidence; median_confidence(end)], ...
-            'LineWidth', 1.5, ...
-            'Color', col.det.(class_name), ...
+        % Reserve a side-by-side slot for each sensor/class in every bin.
+        series_idx = (i - 1)*numel(class_names) + j;
+        offset = (series_idx - (n_series + 1)/2)*series_width;
+        populated_bins = find(isfinite(median_confidence));
+        box_centers = reshape(bin_centers(populated_bins),[],1) + offset;
+        left_edges = box_centers - 0.45*series_width;
+        right_edges = box_centers + 0.45*series_width;
+        medians = median_confidence(populated_bins);
+        lower = lower_confidence(populated_bins);
+        upper = upper_confidence(populated_bins);
+        q25 = lower_quartile(populated_bins);
+        q75 = upper_quartile(populated_bins);
+
+        % Draw whiskers first so the opaque quartile boxes cover their centers.
+        errorbar(ax_confidence_range, ...
+            box_centers, medians, medians - lower, upper - medians, ...
+            'LineStyle', 'none', ...
+            'Color', 'k', ...
+            'LineWidth', 1.2, ...
+            'CapSize', 6, ...
+            'HandleVisibility', 'off');
+
+        patch( ...
+            'XData', [left_edges right_edges right_edges left_edges].', ...
+            'YData', [q25 q25 q75 q75].', ...
+            'FaceColor', col.det.(class_name), ...
+            'EdgeColor', 'k', ...
+            'LineWidth', 1, ...
             'DisplayName', sprintf('%s - %s', ...
                 sensors{i}.name, class_name));
+
+        % Separate horizontal segments show each bin's median inside its box.
+        plot(ax_confidence_range, ...
+            [left_edges right_edges].', [medians medians].', ...
+            'Color', 'k', ...
+            'LineWidth', 1.5, ...
+            'HandleVisibility', 'off');
     end
 end
+
+% Shared percentile keys apply to every class; NaNs keep them off the plot.
+patch(ax_confidence_range, ...
+    'XData', nan(4,1), 'YData', nan(4,1), ...
+    'FaceColor', [1 1 1], ...
+    'EdgeColor', 'k', ...
+    'LineWidth', 1, ...
+    'DisplayName', '25th-75th percentiles');
+errorbar(ax_confidence_range, NaN, NaN, NaN, NaN, ...
+    'LineStyle', '-', ...
+    'Color', 'k', ...
+    'LineWidth', 1.2, ...
+    'CapSize', 6, ...
+    'DisplayName', '5th-95th percentiles');
 xlabel("detection range [m]")
-ylabel("median conf [-]")
+ylabel("confidence [-]")
 ylim([0 1]);
 grid on;
 legend show
 
-% Median point count
-ax_point_count_range = nexttile; hold on;
-for i = 1:numel(sensors)
-    s = sensors{i}.s;
-    distance = sensor_distances{i};
-    valid = sensor_valid{i} & isfinite(s.pt_count);
-
-    for j = 1:numel(class_names)
-        class_name = class_names{j};
-        class_idx = valid & s.class == DET_LABELS.(class_name);
-        if ~any(class_idx(:))
-            continue;
-        end
-
-        [~, ~, range_bins] = histcounts(distance(class_idx),bin_edges);
-        values = double(s.pt_count(class_idx));
-        median_points = accumarray(range_bins(:),values(:),[n_bins 1],@mean,NaN);
-
-        stairs( ...
-            bin_edges, [median_points; median_points(end)], ...
-            'LineWidth', 1.5, ...
-            'Color', col.det.(class_name), ...
-            'DisplayName', sprintf('%s - %s', ...
-                sensors{i}.name, class_name));
-    end
-end
-xlabel("detection range [m]")
-ylabel("median pt_count [-]")
-grid on;
-legend show
-
-linkaxes([ax_distance_count,ax_confidence_range,ax_point_count_range],'x');
+linkaxes([ax_distance_count,ax_confidence_range],'x');
 xlim(ax_distance_count,[bin_edges(1),bin_edges(end)]);
