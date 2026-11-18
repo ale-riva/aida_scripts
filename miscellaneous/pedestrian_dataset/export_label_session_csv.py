@@ -26,6 +26,7 @@ CLASS_IDS = {
     "Bicycle": 5,
     "Unknown1": 6,
     "Unknown2": 6,
+    "Misc": 7,
 }
 
 
