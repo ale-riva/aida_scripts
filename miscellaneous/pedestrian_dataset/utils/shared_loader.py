@@ -4,6 +4,9 @@ import csv
 import logging
 from typing import Optional, Dict
 
+from timestamp_matching.matcher import SampleGroup
+from utils.timestamp_utils import filename_to_ns
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +43,26 @@ def _load_timestamps_csv(stage1_dir: str, filename: str = "timestamps.csv") -> t
         header = reader.fieldnames or []
         rows   = list(reader)
     return header, rows
+
+
+def load_sample_groups(csv_path: str, lidar_keys: list[str], camera_keys: list[str]) -> list[SampleGroup]:
+    """Read exact sensor header timestamps from a Stage-1 timestamps CSV."""
+    header, rows = _load_timestamps_csv(os.path.dirname(csv_path), os.path.basename(csv_path))
+    missing = [key for key in lidar_keys if key not in header]
+    if missing:
+        raise ValueError(f"Timestamps CSV is missing LiDAR columns: {missing}")
+    groups = []
+    for row_number, row in enumerate(rows, start=2):
+        if any(not (row.get(key) or "").strip() for key in lidar_keys):
+            raise ValueError(f"Timestamps CSV row {row_number} has an empty LiDAR timestamp")
+        groups.append(SampleGroup(
+            lidar_timestamps={key: filename_to_ns(row[key].strip()) for key in lidar_keys},
+            camera_timestamps={
+                key: filename_to_ns(row[key].strip()) if (row.get(key) or "").strip() else None
+                for key in camera_keys
+            },
+        ))
+    return groups
 
 def _load_ego_poses_csv(stage1_dir: str) -> Dict[str, Optional[dict]]:
     """

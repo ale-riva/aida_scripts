@@ -35,6 +35,7 @@ def extract_camera_frame(
     tolerance_ms: float,
     compressed: bool = True,
     on_existing: str = "skip",
+    header_timestamp_ns: int | None = None,
 ) -> bool:
     """
     Extract one camera frame from "parser" and write it to "out_path" as PNG.
@@ -48,6 +49,7 @@ def extract_camera_frame(
     compressed    : True  -> sensor_msgs/CompressedImage
                     False -> sensor_msgs/Image
     on_existing   : "skip" | "overwrite" | "abort"
+    header_timestamp_ns : require this exact header stamp at the recording timestamp
 
     Returns: bool  (True if written, False if skipped).
     """
@@ -59,12 +61,18 @@ def extract_camera_frame(
             raise FileExistsError(f"Output file already exists: {out_path}")
 
     half_window_ns = int(tolerance_ms * _MS_TO_NS)
+    exact = header_timestamp_ns is not None
 
     messages = parser.get_messages(
         topics=topic,
-        start_time=timestamp_ns - half_window_ns,
-        end_time=timestamp_ns + half_window_ns,
+        start_time=timestamp_ns if exact else timestamp_ns - half_window_ns,
+        end_time=timestamp_ns + 1 if exact else timestamp_ns + half_window_ns,
     )
+    if exact:
+        messages = [
+            (ts, msg) for ts, msg in messages
+            if ts == timestamp_ns and msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec == header_timestamp_ns
+        ]
 
     if not messages:
         logger.warning("No message found for topic %s at ts=%d", topic, timestamp_ns)

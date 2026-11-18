@@ -14,9 +14,8 @@ import os
 from copy import copy
 
 import numpy as np
-from rclpy.serialization import deserialize_message
 
-from bag_reader import make_parser
+from bag_reader import make_parser, iter_serialized_messages as _iter_serialized_messages, decode_message as _decode_message
 from extraction.calibration_extractor import extract_calibration
 from extraction.camera_extractor import write_camera_frame, build_camera_output_path
 from extraction.ego_pose_extractor import iter_ego_poses, find_ego_pose_at
@@ -104,7 +103,7 @@ def run_cluster_extraction(config, files: list[str]) -> str:
     return run_detection_extraction(config, files, cluster=True)
 
 
-def run_detection_extraction(config, files: list[str], cluster: bool = False) -> str:
+def run_detection_extraction(config, files: list[str], cluster: bool = False, timestamp_groups=None) -> str:
     """Match detections to clouds and export samples or clusters plus frame labels."""
     stage1_out = config.output_base_dir
 
@@ -157,7 +156,7 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
         finally:
             del parser
 
-    if not lidar_index or not detection_index:
+    if not lidar_index or (not detection_index and timestamp_groups is None):
         raise ValueError("The bag must contain messages on both the LiDAR and detection topics")
     lidar_index.sort()
     detection_index.sort(key=lambda entry: entry[:3])
@@ -177,26 +176,45 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
     # Match headers globally before extracting, including across bag boundaries.
     cloud_detections = {}
     unmatched = 0
-    for timestamp_ns, _, _, detection_msg in detection_index:
-        idx = _find_closest_within(timestamp_ns, lidar_ts, config.matching.tolerance_ms)
-        if idx is None:
-            unmatched += 1
-            logger.warning("No matching point cloud for detections at ts=%d", timestamp_ns)
-            continue
-        _, _, cloud_path, cloud_number = lidar_index[idx]
-        file_matches = cloud_detections.setdefault(cloud_path, {})
-        file_matches.setdefault(cloud_number, []).append((timestamp_ns, detection_msg))
+    if timestamp_groups is None:
+        for timestamp_ns, _, _, detection_msg in detection_index:
+            idx = _find_closest_within(timestamp_ns, lidar_ts, config.matching.tolerance_ms)
+            if idx is None:
+                unmatched += 1
+                logger.warning("No matching point cloud for detections at ts=%d", timestamp_ns)
+                continue
+            _, _, cloud_path, cloud_number = lidar_index[idx]
+            file_matches = cloud_detections.setdefault(cloud_path, {})
+            file_matches.setdefault(cloud_number, []).append((timestamp_ns, detection_msg))
 
-    # Sample matched clouds by header timestamp, including across bag boundaries.
-    next_target = None
-    for timestamp_ns, _, cloud_path, cloud_number in lidar_index:
-        file_matches = cloud_detections.get(cloud_path, {})
-        if cloud_number not in file_matches:
-            continue
-        if next_target is not None and timestamp_ns < next_target:
-            del file_matches[cloud_number]
-            continue
-        next_target = timestamp_ns + int(config.matching.sampling_interval_ms * 1_000_000)
+        # Sample matched clouds by header timestamp, including across bag boundaries.
+        next_target = None
+        for timestamp_ns, _, cloud_path, cloud_number in lidar_index:
+            file_matches = cloud_detections.get(cloud_path, {})
+            if cloud_number not in file_matches:
+                continue
+            if next_target is not None and timestamp_ns < next_target:
+                del file_matches[cloud_number]
+                continue
+            next_target = timestamp_ns + int(config.matching.sampling_interval_ms * 1_000_000)
+    else:
+        requested_groups = {group.lidar_timestamps[config.lidar_key]: group for group in timestamp_groups}
+        detection_ts = np.array([entry[0] for entry in detection_index], dtype=np.int64)
+        for timestamp_ns in requested_groups:
+            idx = int(np.searchsorted(lidar_ts, timestamp_ns))
+            if idx == len(lidar_ts) or lidar_ts[idx] != timestamp_ns:
+                logger.warning("No exact LiDAR frame at CSV ts=%d", timestamp_ns)
+                continue
+            detection_idx = _find_closest_within(timestamp_ns, detection_ts, config.matching.tolerance_ms) if len(detection_ts) else None
+            if detection_idx is None:
+                unmatched += 1
+                logger.warning("No matching detections for CSV ts=%d", timestamp_ns)
+                continue
+            detection_timestamp = int(detection_ts[detection_idx])
+            _, _, cloud_path, cloud_number = lidar_index[idx]
+            cloud_detections.setdefault(cloud_path, {})[cloud_number] = [
+                (ts, message) for ts, _, _, message in detection_index if ts == detection_timestamp
+            ]
 
     # Match optional cameras to selected cloud headers, retaining only their locations.
     matched_cloud_ts = sorted({
@@ -209,8 +227,17 @@ def run_detection_extraction(config, files: list[str], cluster: bool = False) ->
         entries = sorted(camera_index[cam.topic])
         camera_ts = np.array([entry[0] for entry in entries], dtype=np.int64)
         for timestamp_ns in matched_cloud_ts:
-            idx = _find_closest_within(timestamp_ns, camera_ts, config.matching.tolerance_ms) if len(camera_ts) else None
             frame_camera_timestamps[timestamp_ns][cam.key] = None
+            if timestamp_groups is None:
+                idx = _find_closest_within(timestamp_ns, camera_ts, config.matching.tolerance_ms) if len(camera_ts) else None
+            else:
+                image_ts = requested_groups[timestamp_ns].camera_timestamps.get(cam.key)
+                if image_ts is None:
+                    continue
+                idx = int(np.searchsorted(camera_ts, image_ts))
+                if idx == len(camera_ts) or camera_ts[idx] != image_ts:
+                    logger.warning("No exact camera %s frame at CSV ts=%d", cam.key, image_ts)
+                    continue
             if idx is None:
                 logger.warning("No matching camera %s for cloud at ts=%d", cam.key, timestamp_ns)
                 continue
@@ -396,28 +423,3 @@ def _write_lidar_sample(cloud_msg, timestamp_ns: int, output_dir: str, on_existi
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     _write_pcd(cloud_msg, out_path)
     return True
-
-
-def _iter_serialized_messages(parser, topics: list[str]):
-    """Stream selected topics together without loading a bag into memory."""
-    if hasattr(parser, "reader"):
-        for schema, channel, record in parser.reader.iter_messages(topics=topics):
-            yield channel.topic, record.log_time, schema.name, record.data
-    else:
-        placeholders = ",".join("?" for _ in topics)
-        rows = parser.conn.execute(
-            "SELECT topics.name,messages.timestamp,topics.type,messages.data "
-            "FROM messages JOIN topics ON messages.topic_id=topics.id "
-            f"WHERE topics.name IN ({placeholders}) ORDER BY messages.timestamp,messages.rowid",
-            tuple(topics),
-        )
-        yield from rows
-
-
-def _decode_message(parser, topic: str, type_name: str, payload):
-    if hasattr(parser, "reader"):
-        message = parser._decode(topic, type_name, payload)
-        if message is None:
-            raise ValueError(f"Cannot decode message for topic {topic}")
-        return message
-    return deserialize_message(payload, parser.topic_msg_message[topic])

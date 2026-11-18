@@ -46,6 +46,7 @@ def extract_lidar_frame(
     out_path: str,
     tolerance_ms: float,
     on_existing: str = "skip",
+    header_timestamp_ns: int | None = None,
 ) -> bool:
     """
     Extract one PointCloud2 message from "parser" at "timestamp_ns" and write
@@ -58,6 +59,7 @@ def extract_lidar_frame(
     out_path      : full path of the output .pcd file
     tolerance_ms  : half-width of the fetch window in milliseconds
     on_existing   : "skip" | "overwrite" | "abort"
+    header_timestamp_ns : require this exact header stamp at the recording timestamp
 
     Returns: bool  (True if written, False if skipped).
     """
@@ -70,12 +72,18 @@ def extract_lidar_frame(
         # overwrite: fall through
 
     half_window_ns = int(tolerance_ms * _MS_TO_NS)
+    exact = header_timestamp_ns is not None
 
     messages = parser.get_messages(
         topics=topic,
-        start_time=timestamp_ns - half_window_ns,
-        end_time=timestamp_ns + half_window_ns,
+        start_time=timestamp_ns if exact else timestamp_ns - half_window_ns,
+        end_time=timestamp_ns + 1 if exact else timestamp_ns + half_window_ns,
     )
+    if exact:
+        messages = [
+            (ts, msg) for ts, msg in messages
+            if ts == timestamp_ns and msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec == header_timestamp_ns
+        ]
 
     if not messages:
         logger.warning("No message found for topic %s at ts=%d", topic, timestamp_ns)

@@ -22,7 +22,7 @@ import time
 import numpy as np
 
 from utils.config_loader import load_config, load_cluster_config, resolve_kitti_cameras
-from bag_reader import make_parser
+from bag_reader import make_parser, iter_serialized_messages, decode_message
 from timestamp_matching.matcher import match_timestamps
 from extraction.lidar_extractor import extract_lidar_frame, build_lidar_output_path
 from extraction.camera_extractor import extract_camera_frame, build_camera_output_path
@@ -34,6 +34,7 @@ from extraction.inspection_metadata_writer import write_inspection_config
 from file_writer.csv_writer import write_csv
 from file_writer.metadata_writer import write_metadata
 from file_writer.ego_pose_csv_writer import write_ego_pose_csv
+from utils.shared_loader import load_sample_groups
 
 os.environ['TZ'] = 'Europe/Rome'
 time.tzset()
@@ -83,7 +84,7 @@ def _bag_stem(bag_dir: str) -> str:
 # Stage 1
 # ---------------------------------------------------------------------------
 
-def run_stage1(config) -> str:
+def run_stage1(config, timestamp_groups=None) -> str:
     """
     Execute Stage 1: timestamp matching + sensor data extraction + calibration.
     Returns the path to the Stage-1 output directory for this bag.
@@ -112,6 +113,17 @@ def run_stage1(config) -> str:
     all_lidar_ts = {l.key: [] for l in config.lidars}
     all_camera_ts = {c.key: [] for c in config.cameras}
     file_ref_ranges = {}  # {fname: (min_ref_ts, max_ref_ts)}
+    sensor_records = {}  # {topic: {header_timestamp: (fname, recording_timestamp)}}
+    if timestamp_groups is not None:
+        for sensor in config.lidars + config.cameras:
+            sensor_records[sensor.topic] = {}
+        requested_timestamps = {
+            sensor.topic: {
+                group.lidar_timestamps.get(sensor.key, group.camera_timestamps.get(sensor.key))
+                for group in timestamp_groups
+            } - {None}
+            for sensor in config.lidars + config.cameras
+        }
 
     # Ego pose: accumulate chunks from each file
     ego_ts_chunks: list = []
@@ -124,20 +136,29 @@ def run_stage1(config) -> str:
         parser = make_parser(fpath)
         logger.info("Reading timestamps from %s ...", fname)
 
-        for lidar in config.lidars:
-            try:
-                ts = parser.get_message_timestamps(lidar.topic)
-            except KeyError:
-                logger.warning("LiDAR topic '%s' is absent from %s.", lidar.topic, fname)
-                ts = []
-            all_lidar_ts[lidar.key].extend(ts)
-            # Record the time span of the reference LiDAR in this file
-            if lidar.key == ref_key and ts:
-                file_ref_ranges[fname] = (min(ts), max(ts))
+        if timestamp_groups is not None:
+            for topic, recording_timestamp, type_name, payload in iter_serialized_messages(parser, list(sensor_records)):
+                message = decode_message(parser, topic, type_name, payload)
+                stamp = message.header.stamp
+                timestamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+                if timestamp_ns in requested_timestamps[topic]:
+                    sensor_records[topic].setdefault(timestamp_ns, (fname, recording_timestamp))
+                del message
+        else:
+            for lidar in config.lidars:
+                try:
+                    ts = parser.get_message_timestamps(lidar.topic)
+                except KeyError:
+                    logger.warning("LiDAR topic '%s' is absent from %s.", lidar.topic, fname)
+                    ts = []
+                all_lidar_ts[lidar.key].extend(ts)
+                # Record the time span of the reference LiDAR in this file
+                if lidar.key == ref_key and ts:
+                    file_ref_ranges[fname] = (min(ts), max(ts))
 
-        for cam in config.cameras:
-            ts = parser.get_message_timestamps(cam.topic)
-            all_camera_ts[cam.key].extend(ts)
+            for cam in config.cameras:
+                ts = parser.get_message_timestamps(cam.topic)
+                all_camera_ts[cam.key].extend(ts)
 
         # Load ego poses from /tf topic in this file
         file_ego_ts, file_ego_poses = load_ego_poses_from_parser(
@@ -175,12 +196,27 @@ def run_stage1(config) -> str:
 
     ## Timestamp matching
     logger.info("Running timestamp matching ...")
-    groups = match_timestamps(
-        lidar_timestamps = all_lidar_ts,
-        camera_timestamps = all_camera_ts,
-        tolerance_ms = tolerance_ms,
-        sampling_interval_ms = sampling_interval_ms,
-    )
+    if timestamp_groups is None:
+        groups = match_timestamps(
+            lidar_timestamps = all_lidar_ts,
+            camera_timestamps = all_camera_ts,
+            tolerance_ms = tolerance_ms,
+            sampling_interval_ms = sampling_interval_ms,
+        )
+    else:
+        groups = []
+        for group in timestamp_groups:
+            missing = [l.key for l in config.lidars if group.lidar_timestamps[l.key] not in sensor_records[l.topic]]
+            if missing:
+                logger.warning("Skipping CSV group at ts=%d: exact LiDAR frames missing for %s",
+                               group.lidar_timestamps[ref_key], missing)
+                continue
+            for cam in config.cameras:
+                ts = group.camera_timestamps[cam.key]
+                if ts is not None and ts not in sensor_records[cam.topic]:
+                    logger.warning("No exact camera %s frame at ts=%d", cam.key, ts)
+                    group.camera_timestamps[cam.key] = None
+            groups.append(group)
     logger.info("Found %d valid sample groups.", len(groups))
 
     if not groups:
@@ -205,20 +241,23 @@ def run_stage1(config) -> str:
     tolerance_bound_ns = int(tolerance_ms * 1_000_000)
 
     for fname in files:
-        ref_range = file_ref_ranges.get(fname)
-        if ref_range is None:
-            logger.warning("No reference timestamps found in %s, skipping.", fname)
-            continue
+        if timestamp_groups is not None:
+            file_groups = groups
+        else:
+            ref_range = file_ref_ranges.get(fname)
+            if ref_range is None:
+                logger.warning("No reference timestamps found in %s, skipping.", fname)
+                continue
 
-        file_min_ts, file_max_ts = ref_range
-        lower_bound = file_min_ts - tolerance_bound_ns
-        upper_bound = file_max_ts + tolerance_bound_ns
+            file_min_ts, file_max_ts = ref_range
+            lower_bound = file_min_ts - tolerance_bound_ns
+            upper_bound = file_max_ts + tolerance_bound_ns
 
-        file_groups = []
-        for g in groups:
-            timestamp = g.lidar_timestamps.get(ref_key, -1)
-            if lower_bound <= timestamp <= upper_bound:
-                file_groups.append(g)
+            file_groups = []
+            for g in groups:
+                timestamp = g.lidar_timestamps.get(ref_key, -1)
+                if lower_bound <= timestamp <= upper_bound:
+                    file_groups.append(g)
 
         if not file_groups:
             logger.info("No groups to extract from %s - skipping.", fname)
@@ -236,16 +275,28 @@ def run_stage1(config) -> str:
                 ts = group.lidar_timestamps.get(lidar.key)
                 if ts is None:
                     continue
+                recording_timestamp = ts
+                if timestamp_groups is not None:
+                    source_file, recording_timestamp = sensor_records[lidar.topic][ts]
+                    if source_file != fname:
+                        continue
                 out_path = build_lidar_output_path(config.output_base_dir, stem, lidar.key, ts)
-                extract_lidar_frame(parser, lidar.topic, ts, out_path, tolerance_ms, config.on_existing)
+                extract_lidar_frame(parser, lidar.topic, recording_timestamp, out_path, tolerance_ms,
+                                    config.on_existing, header_timestamp_ns=ts if timestamp_groups is not None else None)
 
             # Camera frames
             for cam in config.cameras:
                 ts = group.camera_timestamps.get(cam.key)
                 if ts is None:
                     continue
+                recording_timestamp = ts
+                if timestamp_groups is not None:
+                    source_file, recording_timestamp = sensor_records[cam.topic][ts]
+                    if source_file != fname:
+                        continue
                 out_path = build_camera_output_path(config.output_base_dir, stem, cam.key, ts)
-                extract_camera_frame(parser, cam.topic, ts, out_path, tolerance_ms, cam.compressed, config.on_existing)
+                extract_camera_frame(parser, cam.topic, recording_timestamp, out_path, tolerance_ms,
+                                     cam.compressed, config.on_existing, header_timestamp_ns=ts if timestamp_groups is not None else None)
 
     ## Write CSV + metadata + ego poses
     csv_path       = os.path.join(stage1_out, "timestamps.csv")
@@ -325,6 +376,9 @@ def _parse_args():
     )
     parser.add_argument("--stage", type=int, choices=[1, 2, 12], default=12, help="Which stage(s) to run: 1, 2, or 12 (both). Default: 12")
     parser.add_argument(
+        "--timestamps-csv", help="Stage-1 CSV listing exact LiDAR and camera header timestamps; bypasses subsampling",
+    )
+    parser.add_argument(
         "--cameras", nargs="*", default=None, metavar="CAMERA_KEY",
         help="With --from_det: export matched cameras (all configured cameras if no keys are supplied). "
              "For KITTI: select cameras by key in interleaving order, overriding kitti.cameras "
@@ -335,6 +389,8 @@ def _parse_args():
         parser.error("--cluster requires --from_det")
     if args.from_det and args.stage == 2:
         parser.error("--from_det is a Stage-1 option; use --stage 1 or omit --stage")
+    if args.timestamps_csv and args.stage == 2:
+        parser.error("--timestamps-csv is a Stage-1 option")
     return args
 
 
@@ -346,6 +402,9 @@ def main():
         config = load_cluster_config(args.config, include_cameras=args.cameras is not None)
         if args.cameras is not None:
             config.cameras = resolve_kitti_cameras(config.cameras, args.cameras)
+        timestamp_groups = load_sample_groups(
+            os.path.expanduser(args.timestamps_csv), [config.lidar_key], [cam.key for cam in config.cameras],
+        ) if args.timestamps_csv else None
         if os.path.isfile(config.bag_dir):
             files = [config.bag_dir]
         else:
@@ -357,7 +416,7 @@ def main():
                 if name.endswith(f".{ext}") and name not in names
             )
             files = [os.path.join(config.bag_dir, name) for name in names]
-        run_detection_extraction(config, files, cluster=args.cluster)
+        run_detection_extraction(config, files, cluster=args.cluster, timestamp_groups=timestamp_groups)
         return
 
     config = load_config(args.config)
@@ -369,7 +428,11 @@ def main():
     stage1_dir = os.path.join(config.output_base_dir, _bag_stem(config.bag_dir))
 
     if args.stage in (1, 12):
-        stage1_dir = run_stage1(config)
+        timestamp_groups = load_sample_groups(
+            os.path.expanduser(args.timestamps_csv), [lidar.key for lidar in config.lidars],
+            [cam.key for cam in config.cameras],
+        ) if args.timestamps_csv else None
+        stage1_dir = run_stage1(config, timestamp_groups=timestamp_groups)
 
     if args.stage in (2, 12):
         run_stage2(config, stage1_dir)
