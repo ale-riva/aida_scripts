@@ -9,4 +9,6 @@ __pycache__
 
 
 miscellaneous/lidar_camera_annotator/.sus
+plots/figures/*
+!plots/figures/.gitkeep
 
