@@ -1,4 +1,4 @@
-% Detection distance from the ego vehicle, using the matched map-frame pose.
+% Detection planar range from the lidar frame, computed by load_perception.
 % Counts and confidence distributions use the current filtered detections.
 distance_figure = figure("Name","DISTANCE",'NumberTitle','off');
 tiledlayout(2,1,'Padding','compact');
@@ -11,16 +11,11 @@ max_distance = 0;
 sensor_distances = cell(size(runs));
 sensor_valid = cell(size(runs));
 
-% Distance from the matched ego pose
+% Use the same lidar-frame range as the detection filters.
 for i = 1:numel(runs)
     s = runs{i}.s;
 
-    ego_x = nan(size(s.class,1),1);
-    ego_y = nan(size(s.class,1),1);
-    valid_pose = isfinite(s.ego_idx);
-    ego_x(valid_pose) = runs{i}.ego.x(s.ego_idx(valid_pose));
-    ego_y(valid_pose) = runs{i}.ego.y(s.ego_idx(valid_pose));
-    distance = hypot(s.x_map - ego_x,s.y_map - ego_y);
+    distance = s.range;
 
     valid = ...
         isfinite(s.stamp) & ...

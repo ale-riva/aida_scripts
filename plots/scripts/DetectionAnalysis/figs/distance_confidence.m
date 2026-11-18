@@ -31,8 +31,8 @@ else
     for i = 1:numel(runs)
         s = runs{i}.s;
 
-        % Compute planar distance
-        distance = hypot(s.x_cog, s.y_cog);
+        % Use the lidar-frame range computed by load_perception.
+        distance = s.range;
 
         valid = isfinite(s.stamp) & isfinite(s.score) & ...
             isfinite(distance) & ...

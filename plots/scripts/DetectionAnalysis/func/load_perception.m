@@ -78,7 +78,7 @@ if isfield(log, topic)
     lid_det.id = unpackField(d, 'meas_array__box_id', lid_det.count, n_msg, n_det);
     lid_det.x_cog = unpackField(d, 'meas_array__x_cog', lid_det.count, n_msg, n_det);
     lid_det.y_cog = unpackField(d, 'meas_array__y_cog', lid_det.count, n_msg, n_det);
-    lid_det.range = sqrt(lid_det.x_cog.^2 +  lid_det.y_cog.^2);
+    lid_det.range = hypot(lid_det.x_cog, lid_det.y_cog);
     lid_det.z_cog = unpackField(d, 'meas_array__z_cog', lid_det.count, n_msg, n_det);
     lid_det.orientation = rad2deg(unpackField(d, 'meas_array__orientation', lid_det.count, n_msg, n_det));
     lid_det.height = unpackField(d, 'meas_array__height', lid_det.count, n_msg, n_det);
