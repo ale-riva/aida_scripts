@@ -1,11 +1,11 @@
 % Count detection observations for VIS_CLASSES, not unique objects.
 class_names = fieldnames(DET_LABELS);
 
-for i = 1:numel(sensors)
-    s = sensors{i}.s;
+for i = 1:numel(runs)
+    s = runs{i}.s;
     valid = isfinite(s.stamp) & isfinite(s.x_cog);
 
-    fprintf('\nDetection totals - %s\n',sensors{i}.name);
+    fprintf('\nDetection totals - %s\n',runs{i}.name);
     fprintf('%-16s %10s\n','Class','Detections');
 
     total_count = 0;

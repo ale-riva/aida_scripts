@@ -9,8 +9,8 @@ tiledlayout(3,1,"Padding","compact");
 nexttile([2,1]); hold on;
 normalization = 'pdf';
 class_names = fieldnames(DET_LABELS);
-for i = 1:numel(sensors)
-    s = sensors{i}.s;
+for i = 1:numel(runs)
+    s = runs{i}.s;
 
     valid = isfinite(s.stamp) & isfinite(s.score);
 
@@ -29,19 +29,20 @@ for i = 1:numel(sensors)
             'Normalization', normalization, ...
             'DisplayStyle', 'stairs', ...
             'LineWidth', 1.5, ...
-            'EdgeColor', col.det.(class_name), ...
+            'EdgeColor', runs{i}.col.(class_name), ...
             'DisplayName', sprintf('%s - %s', ...
-                sensors{i}.name, class_name));
+                runs{i}.name, class_name));
     end
 end
 xlabel("confidence [-]")
 ylabel([normalization  "[-]"])
+legend show
 
 % count
 nexttile;hold on;
 normalization = "count";
-for i = 1:numel(sensors)
-    s = sensors{i}.s;
+for i = 1:numel(runs)
+    s = runs{i}.s;
 
     valid = isfinite(s.stamp) & isfinite(s.score);
 
@@ -60,9 +61,9 @@ for i = 1:numel(sensors)
             'Normalization', normalization, ...
             'DisplayStyle', 'stairs', ...
             'LineWidth', 1.5, ...
-            'EdgeColor', col.det.(class_name), ...
+            'EdgeColor', runs{i}.col.(class_name), ...
             'DisplayName', sprintf('%s - %s', ...
-            sensors{i}.name, class_name));
+            runs{i}.name, class_name));
     end
 end
 xlabel("confidence [-]")

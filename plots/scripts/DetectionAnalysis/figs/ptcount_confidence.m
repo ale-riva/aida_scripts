@@ -1,4 +1,4 @@
-% Confidence distributions per VIS_CLASSES, using the current filtered sensors.
+% Confidence distributions per VIS_CLASSES, using the current filtered runs.
 % One row per sensor and one column per class, with linked XY axes.
 % A shared logarithmic color scale shows raw observation counts.
 % Populated cells are fully opaque; empty cells are transparent.
@@ -15,19 +15,19 @@ class_ids = class_ids(known);
 class_names = label_names(label_idx(known));
 
 ptcount_confidence_figure = figure("Name","PTCOUNT-CONFIDENCE",'NumberTitle','off');
-ptcount_confidence_axes = gobjects(numel(sensors), numel(class_ids));
-if isempty(sensors) || isempty(class_ids)
+ptcount_confidence_axes = gobjects(numel(runs), numel(class_ids));
+if isempty(runs) || isempty(class_ids)
     ax_empty = axes('Parent', ptcount_confidence_figure);
     axis(ax_empty, 'off');
-    text(ax_empty, 0.5, 0.5, 'No sensors or classes selected.', ...
+    text(ax_empty, 0.5, 0.5, 'No runs or classes selected.', ...
         'HorizontalAlignment', 'center');
 else
 
     % Valid sensor detections
-    pairs = cell(numel(sensors), numel(class_ids));
+    pairs = cell(numel(runs), numel(class_ids));
     max_points = 1;
-    for i = 1:numel(sensors)
-        s = sensors{i}.s;
+    for i = 1:numel(runs)
+        s = runs{i}.s;
         valid = isfinite(s.stamp) & isfinite(s.score) & isfinite(s.pt_count) & ...
             s.pt_count >= 0 & s.score >= 0 & s.score <= 1;
         for j = 1:numel(class_ids)
@@ -46,12 +46,12 @@ else
     confidence_centers = (confidence_edges(1:end-1) + confidence_edges(2:end))/2;
     ticks = unique([0, 1, 10.^(1:floor(log10(max_points)))]);
     ticks = ticks(ticks <= max_points);
-    layout = tiledlayout(ptcount_confidence_figure, numel(sensors), numel(class_ids), ...
+    layout = tiledlayout(ptcount_confidence_figure, numel(runs), numel(class_ids), ...
         'Padding', 'compact', 'TileSpacing', 'compact');
     max_count = 1;
 
     % --- Sensor detections ---
-    for i = 1:numel(sensors)
+    for i = 1:numel(runs)
         for j = 1:numel(class_ids)
             ax_heatmap = nexttile(layout);
             ptcount_confidence_axes(i,j) = ax_heatmap;
@@ -60,7 +60,7 @@ else
                 point_edges, confidence_edges);
             max_count = max([max_count; counts(:)]);
 
-            class_color = col.det.(class_names{j});
+            class_color = runs{i}.col.(class_names{j});
             img = imagesc(ax_heatmap, point_centers, confidence_centers, counts.');
             colormap(ax_heatmap, turbo(256));
             img.AlphaData = double(counts.' > 0);
@@ -73,7 +73,7 @@ else
             hold(ax_heatmap, 'on');
             class_key = patch(ax_heatmap, NaN, NaN, class_color, 'EdgeColor', 'none', ...
                 'DisplayName', sprintf('%s - %s (N=%d)', ...
-                sensors{i}.name, class_names{j}, size(data,1)));
+                runs{i}.name, class_names{j}, size(data,1)));
             legend(ax_heatmap, class_key, 'Location', 'northeast', 'Interpreter', 'none');
             grid(ax_heatmap, 'off');
             if isempty(data)

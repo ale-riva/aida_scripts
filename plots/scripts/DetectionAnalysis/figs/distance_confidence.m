@@ -15,21 +15,21 @@ class_ids = class_ids(known);
 class_names = label_names(label_idx(known));
 
 distance_confidence_figure = figure("Name","DISTANCE-CONFIDENCE",'NumberTitle','off');
-distance_confidence_axes = gobjects(numel(sensors), numel(class_ids));
+distance_confidence_axes = gobjects(numel(runs), numel(class_ids));
 
-if isempty(sensors) || isempty(class_ids)
+if isempty(runs) || isempty(class_ids)
     ax_empty = axes('Parent', distance_confidence_figure);
     axis(ax_empty, 'off');
-    text(ax_empty, 0.5, 0.5, 'No sensors or classes selected.', ...
+    text(ax_empty, 0.5, 0.5, 'No runs or classes selected.', ...
         'HorizontalAlignment', 'center');
 else
 
     % Valid sensor detections
-    pairs = cell(numel(sensors), numel(class_ids));
+    pairs = cell(numel(runs), numel(class_ids));
     max_distance = 1;
 
-    for i = 1:numel(sensors)
-        s = sensors{i}.s;
+    for i = 1:numel(runs)
+        s = runs{i}.s;
 
         % Compute planar distance
         distance = hypot(s.x_cog, s.y_cog);
@@ -57,13 +57,13 @@ else
     confidence_centers = (confidence_edges(1:end-1) + confidence_edges(2:end))/2;
 
     layout = tiledlayout(distance_confidence_figure, ...
-        numel(sensors), numel(class_ids), ...
+        numel(runs), numel(class_ids), ...
         'Padding', 'compact', 'TileSpacing', 'compact');
 
     max_count = 1;
 
     % --- Sensor detections ---
-    for i = 1:numel(sensors)
+    for i = 1:numel(runs)
         for j = 1:numel(class_ids)
             ax_heatmap = nexttile(layout);
             distance_confidence_axes(i,j) = ax_heatmap;
@@ -75,7 +75,7 @@ else
 
             max_count = max([max_count; counts(:)]);
 
-            class_color = col.det.(class_names{j});
+            class_color = runs{i}.col.(class_names{j});
 
             img = imagesc(ax_heatmap, ...
                 distance_centers, confidence_centers, counts.');
@@ -99,7 +99,7 @@ else
             class_key = patch(ax_heatmap, NaN, NaN, class_color, ...
                 'EdgeColor', 'none', ...
                 'DisplayName', sprintf('%s - %s (N=%d)', ...
-                sensors{i}.name, class_names{j}, size(data,1)));
+                runs{i}.name, class_names{j}, size(data,1)));
 
             legend(ax_heatmap, class_key, ...
                 'Location', 'northeast', 'Interpreter', 'none');

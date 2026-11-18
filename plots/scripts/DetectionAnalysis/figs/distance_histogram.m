@@ -8,18 +8,18 @@ class_ids = cellfun(@(name) DET_LABELS.(name),class_names);
 class_names = class_names(ismember(class_ids,VIS_CLASSES));
 bin_width = 5; % Distance bin width [m].
 max_distance = 0;
-sensor_distances = cell(size(sensors));
-sensor_valid = cell(size(sensors));
+sensor_distances = cell(size(runs));
+sensor_valid = cell(size(runs));
 
 % Distance from the matched ego pose
-for i = 1:numel(sensors)
-    s = sensors{i}.s;
+for i = 1:numel(runs)
+    s = runs{i}.s;
 
     ego_x = nan(size(s.class,1),1);
     ego_y = nan(size(s.class,1),1);
     valid_pose = isfinite(s.ego_idx);
-    ego_x(valid_pose) = ego.x(s.ego_idx(valid_pose));
-    ego_y(valid_pose) = ego.y(s.ego_idx(valid_pose));
+    ego_x(valid_pose) = runs{i}.ego.x(s.ego_idx(valid_pose));
+    ego_y(valid_pose) = runs{i}.ego.y(s.ego_idx(valid_pose));
     distance = hypot(s.x_map - ego_x,s.y_map - ego_y);
 
     valid = ...
@@ -33,14 +33,14 @@ for i = 1:numel(sensors)
     max_distance = max([max_distance; valid_distance(:)]);
 end
 
-% Common bins for all sensors, selected classes and panels.
+% Common bins for all runs, selected classes and panels.
 bin_edges = 0:bin_width:max(bin_width,ceil(max_distance/bin_width)*bin_width);
 n_bins = numel(bin_edges) - 1;
 
 % Count
 ax_distance_count = nexttile; hold on;
-for i = 1:numel(sensors)
-    s = sensors{i}.s;
+for i = 1:numel(runs)
+    s = runs{i}.s;
     distance = sensor_distances{i};
     valid = sensor_valid{i};
 
@@ -57,9 +57,9 @@ for i = 1:numel(sensors)
             'Normalization', 'count', ...
             'DisplayStyle', 'stairs', ...
             'LineWidth', 1.5, ...
-            'EdgeColor', col.det.(class_name), ...
+            'EdgeColor', runs{i}.col.(class_name), ...
             'DisplayName', sprintf('%s - %s', ...
-                sensors{i}.name, class_name));
+                runs{i}.name, class_name));
     end
 end
 xlabel("detection range [m]")
@@ -70,10 +70,10 @@ legend show
 % Grouped confidence violins, medians and 25th-75th percentile whiskers.
 ax_confidence_range = nexttile; hold on;
 bin_centers = (bin_edges(1:end-1) + bin_edges(2:end))/2;
-n_series = numel(sensors)*numel(class_names);
+n_series = numel(runs)*numel(class_names);
 series_width = 0.8*bin_width/max(1,n_series);
-for i = 1:numel(sensors)
-    s = sensors{i}.s;
+for i = 1:numel(runs)
+    s = runs{i}.s;
     distance = sensor_distances{i};
     valid = sensor_valid{i} & isfinite(s.score);
 
@@ -93,7 +93,7 @@ for i = 1:numel(sensors)
             @(v) prctile(v,75),NaN);
 
         % Reserve a side-by-side slot for each sensor/class in every bin.
-        series_idx = (i - 1)*numel(class_names) + j;
+        series_idx = (j - 1)*numel(runs) + i;
         offset = (series_idx - (n_series + 1)/2)*series_width;
         populated_bins = find(isfinite(median_confidence));
         violin_centers = reshape(bin_centers(populated_bins),[],1) + offset;
@@ -104,11 +104,11 @@ for i = 1:numel(sensors)
         % One legend entry per sensor/class, including constant distributions.
         patch(ax_confidence_range, ...
             'XData', nan(4,1), 'YData', nan(4,1), ...
-            'FaceColor', col.det.(class_name), ...
+            'FaceColor', runs{i}.col.(class_name), ...
             'EdgeColor', 'k', ...
             'LineWidth', 1, ...
             'DisplayName', sprintf('%s - %s', ...
-                sensors{i}.name, class_name));
+                runs{i}.name, class_name));
 
         for k = 1:numel(populated_bins)
             bin_values = values(range_bins == populated_bins(k));
@@ -118,7 +118,7 @@ for i = 1:numel(sensors)
                 plot(ax_confidence_range, ...
                     center + [-half_width half_width], ...
                     [bin_values(1) bin_values(1)], ...
-                    'Color', col.det.(class_name), ...
+                    'Color', runs{i}.col.(class_name), ...
                     'LineWidth', 3, 'HandleVisibility', 'off');
                 continue;
             end
@@ -129,7 +129,7 @@ for i = 1:numel(sensors)
             patch(ax_confidence_range, ...
                 'XData', center + [-width fliplr(width)], ...
                 'YData', [confidence_grid fliplr(confidence_grid)], ...
-                'FaceColor', col.det.(class_name), ...
+                'FaceColor', runs{i}.col.(class_name), ...
                 'EdgeColor', 'k', ...
                 'LineWidth', 1, 'HandleVisibility', 'off');
         end
