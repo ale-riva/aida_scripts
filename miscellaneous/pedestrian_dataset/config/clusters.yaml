@@ -20,7 +20,7 @@ output:
   base_dir: "/mnt/storage/AIDA/bags/2026-10-19/2026-10-19_16-24-06_normal/pedestrian_dataset_wcam"  # direct root for samples/ or clusters/, labels/ and CSV files
   on_existing: "skip"  # skip | overwrite | abort
 cluster: false  # save cropped detection clusters instead of full clouds
-  cameras: false  # true for all cameras, or list keys such as [camera_0, camera_2]
+  cameras: true  # true for all cameras, or list keys such as [camera_0, camera_2]
   copy_samples: false  # reused samples are symlinked unless true
 
 matching:
