@@ -1,60 +1,482 @@
-"""
-Extract detection-matched full clouds or clusters, with Stage-1 3-D labels.
-Output paths: samples/<lidar_key>/<timestamp>.pcd or clusters/<class_id>/<timestamp>_<detection_id>.pcd.
-
-Matching uses message header.stamp; exported frames use cloud header.stamp. The first pass
-indexes clouds and optional cameras and retains detections and ego poses; the second
-streams selected clouds and images.
-"""
+"""Export detection-matched LiDAR samples, camera images, and Stage-1 metadata."""
 
 from __future__ import annotations
 
+import csv
 import logging
 import os
+import shutil
 from copy import copy
+from dataclasses import dataclass, field
+from operator import itemgetter
+from typing import Any
 
 import numpy as np
+import yaml
 
-from bag_reader import make_parser, iter_serialized_messages as _iter_serialized_messages, decode_message as _decode_message
+from bag_reader import decode_message, iter_serialized_messages, make_parser
 from extraction.calibration_extractor import extract_calibration
-from extraction.camera_extractor import write_camera_frame, build_camera_output_path
-from extraction.ego_pose_extractor import iter_ego_poses, find_ego_pose_at
-from extraction.lidar_extractor import _write_pcd, read_cloud_points, build_lidar_output_path
+from extraction.camera_extractor import build_camera_output_path, write_camera_frame
+from extraction.detection_matching import (
+    BagIndex,
+    CameraMatches,
+    CloudMatches,
+    DetectionMatches,
+    find_detection_slice,
+    index_bag_messages,
+    match_cameras,
+    match_requested_clouds,
+    match_sampled_clouds,
+)
+from extraction.ego_pose_extractor import find_ego_pose_at
+from extraction.lidar_extractor import _write_pcd, build_lidar_output_path, read_cloud_points
 from file_writer.csv_writer import write_csv
-from file_writer.detection_label_writer import write_detection_labels
 from file_writer.detection_confidence_csv_writer import write_detection_confidence_csv
+from file_writer.detection_label_writer import write_detection_labels
 from file_writer.detection_point_count_csv_writer import write_detection_point_count_csv
 from file_writer.ego_pose_csv_writer import write_ego_pose_csv
-from timestamp_matching.matcher import SampleGroup, _find_closest_within
-from utils.timestamp_utils import ns_to_filename
-from utils.tf_static_parser import TFStaticParser
-from utils.camera_info_parser import CameraInfoParser
+from timestamp_matching.matcher import SampleGroup
+from utils.config_loader import CameraConfig, ClusterConfig
+from utils.pcd_reader import read_pcd
+from utils.timestamp_utils import message_timestamp_ns, ns_to_filename
 
 logger = logging.getLogger(__name__)
 
+DetectionBoxes = list[tuple[Any, np.ndarray]]
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+
+@dataclass
+class FrameMetadata:
+    confidences: dict[int, dict[int, float]] = field(default_factory=dict)
+    point_counts: dict[int, dict[int, int]] = field(default_factory=dict)
+
+
+def run_cluster_extraction(config: ClusterConfig, files: list[str]) -> str:
+    """Extract clusters using the shared detection-driven Stage-1 pipeline."""
+    return run_detection_extraction(config, files, cluster=True)
+
+
+def run_detection_extraction(
+    config: ClusterConfig,
+    files: list[str],
+    cluster: bool = False,
+    timestamp_groups: list[SampleGroup] | None = None,
+) -> str:
+    """Export matched samples from a bag or reuse samples from a prior export."""
+    if config.reuse_dataset:
+        if timestamp_groups is None:
+            raise ValueError("Sample reuse requires timestamps.csv")
+        return _run_detection_reuse(config, files, timestamp_groups)
+
+    logger.info(">>> STAGE 1: FROM DETECTIONS (%s)", "clusters" if cluster else "full clouds")
+    logger.info("BAG input   : %s (%d files)", config.bag_dir, len(files))
+    logger.info("Output dir  : %s", config.output_base_dir)
+
+    index = index_bag_messages(config, files)
+    if not index.clouds or (not index.detections and timestamp_groups is None):
+        raise ValueError("The bag must contain messages on both the LiDAR and detection topics")
+    if not len(index.ego_timestamps):
+        logger.warning("No ego poses found; ego_poses.csv will have empty numeric cells.")
+
+    # Sampled runs start from detections. CSV runs start from the requested LiDAR frames.
+    requested_groups = None
+    if timestamp_groups is None:
+        cloud_matches, unmatched = match_sampled_clouds(index, config)
+    else:
+        requested_groups = {
+            group.lidar_timestamps[config.lidar_key]: group for group in timestamp_groups
+        }
+        cloud_matches, unmatched = match_requested_clouds(
+            index, requested_groups, config.matching.tolerance_ms,
+        )
+
+    camera_matches = match_cameras(index, config, cloud_matches, requested_groups)
+    _export_bag_samples(config, files, cluster, index, cloud_matches, camera_matches, unmatched)
+    return config.output_base_dir
+
+
+def _export_bag_samples(
+    config: ClusterConfig,
+    files: list[str],
+    cluster: bool,
+    index: BagIndex,
+    cloud_matches: CloudMatches,
+    camera_matches: CameraMatches,
+    unmatched: int,
+) -> None:
+    metadata = FrameMetadata()
+    exported_images = {camera.key: set() for camera in config.cameras}
+    written_clouds = 0
+    written_images = 0
+    lidar_frame = None
+    lidar_to_reference = None
+
+    # Stream each selected topic once per split and decode only matched payloads.
+    for bag_path in files:
+        file_clouds = cloud_matches.get(bag_path, {})
+        file_images = camera_matches.by_file.get(bag_path, {})
+        if not file_clouds and not file_images:
+            continue
+
+        topics = {topic for topic, _ in file_images}
+        if file_clouds:
+            topics.add(config.lidar_topic)
+        message_numbers = dict.fromkeys(topics, 0)
+        parser = make_parser(bag_path)
+        logger.info(
+            "Pass 2: extracting %d matched clouds and %d images from %s ...",
+            len(file_clouds), len(file_images), os.path.basename(bag_path),
+        )
+        try:
+            for topic, _, type_name, payload in iter_serialized_messages(parser, sorted(topics)):
+                message_number = message_numbers[topic]
+                message_numbers[topic] += 1
+
+                if topic == config.lidar_topic:
+                    matches = file_clouds.pop(message_number, None)
+                    if matches is None:
+                        continue
+                    cloud = decode_message(parser, topic, type_name, payload)
+                    cloud_frame = cloud.header.frame_id.lstrip("/")
+
+                    # The first exported cloud establishes the calibration for the dataset.
+                    if lidar_frame is None:
+                        lidar_frame = config.lidar_frame_id or cloud.header.frame_id
+                        if lidar_frame.lstrip("/") != cloud_frame:
+                            raise ValueError("Configured LiDAR frame_id differs from the exported cloud frame")
+                        lidar_to_reference = _export_calibration(config, index, lidar_frame, camera_matches.frame_ids)
+                    elif lidar_frame.lstrip("/") != cloud_frame:
+                        raise ValueError("Exported point clouds must share the configured LiDAR frame")
+
+                    written_clouds += _export_bag_cloud(
+                        config, cloud, matches, cluster, lidar_to_reference, metadata,
+                    )
+                    del cloud
+                else:
+                    matches = file_images.pop((topic, message_number), None)
+                    if matches is None:
+                        continue
+                    image = decode_message(parser, topic, type_name, payload)
+                    written_images += _export_bag_image(config, image, matches, exported_images)
+                    del image
+
+                if not file_clouds and not file_images:
+                    break
+
+            if file_clouds or file_images:
+                raise ValueError(f"Matched point clouds or images missing from {bag_path}")
+        finally:
+            del parser
+
+    _write_bag_metadata(config, index, metadata, camera_matches, exported_images)
+    logger.info(
+        "Detection extraction complete: %d PCD files, %d images written, %d unmatched messages",
+        written_clouds, written_images, unmatched,
+    )
+
+
+def _export_calibration(
+    config: ClusterConfig,
+    index: BagIndex,
+    lidar_frame: str,
+    camera_frames: list[str],
+):
+    # Preserve the order of sensor links and request each link only once.
+    sensor_links = list(dict.fromkeys([lidar_frame, config.ego_pose.child_frame, *camera_frames]))
+    calibration = extract_calibration(
+        urdf_path=config.urdf_path,
+        intrinsics_yaml_path=config.calibration_yaml,
+        stage1_out=config.output_base_dir,
+        reference_frame=config.reference_frame or config.ego_pose.child_frame,
+        sensor_links=sensor_links,
+        camera_frame_ids=camera_frames,
+        tf_static=index.static_transforms,
+        camera_info=index.camera_info,
+    )
+    return calibration["extrinsics"].get(lidar_frame)
+
+
+def _export_bag_image(
+    config: ClusterConfig,
+    image,
+    matches: dict[str, tuple[CameraConfig, int]],
+    exported_images: dict[str, set[int]],
+) -> int:
+    written = 0
+    for camera, timestamp_ns in matches.values():
+        path = build_camera_output_path(config.output_base_dir, "", camera.key, timestamp_ns)
+        written += write_camera_frame(image, path, camera.compressed, config.on_existing)
+
+        # Files kept by the skip policy still belong in the timestamps CSV.
+        if os.path.isfile(path):
+            exported_images[camera.key].add(timestamp_ns)
+    return written
+
+
+def _export_bag_cloud(
+    config: ClusterConfig,
+    cloud,
+    matches: DetectionMatches,
+    cluster: bool,
+    lidar_to_reference,
+    metadata: FrameMetadata,
+) -> int:
+    cloud_frame = cloud.header.frame_id.lstrip("/")
+    for _, message in matches:
+        if message.header.frame_id.lstrip("/") != cloud_frame:
+            raise ValueError("Point cloud and detections must be in the same frame")
+
+    timestamp_ns = message_timestamp_ns(cloud)
+    detections = _frame_detections(matches, timestamp_ns, config.target_classes)
+    xyz = None
+    written = 0
+
+    if cluster:
+        if detections:
+            xyz = _xyz_coordinates(read_cloud_points(cloud))
+            written = _write_bag_clusters(
+                cloud, detections, xyz, timestamp_ns, config.output_base_dir, config.on_existing,
+            )
+    else:
+        written = _write_lidar_sample(
+            cloud, timestamp_ns, config.output_base_dir, config.on_existing, config.lidar_key,
+        )
+
+    _write_frame_labels(config, timestamp_ns, detections, lidar_to_reference, metadata)
+    if detections:
+        if xyz is None:
+            xyz = _xyz_coordinates(read_cloud_points(cloud))
+        metadata.point_counts[timestamp_ns] = _count_points(detections, xyz)
+    else:
+        metadata.point_counts[timestamp_ns] = {}
+    return written
+
+
+def _write_bag_metadata(
+    config: ClusterConfig,
+    index: BagIndex,
+    metadata: FrameMetadata,
+    camera_matches: CameraMatches,
+    exported_images: dict[str, set[int]],
+) -> None:
+    groups = []
+    ego_poses = []
+    for timestamp_ns in sorted(metadata.confidences):
+        # Leave the camera cell empty if the selected image could not be written.
+        cameras = {}
+        for key, image_timestamp in camera_matches.timestamps_by_cloud[timestamp_ns].items():
+            cameras[key] = image_timestamp if image_timestamp in exported_images[key] else None
+        groups.append(SampleGroup({config.lidar_key: timestamp_ns}, cameras))
+        ego_poses.append(find_ego_pose_at(
+            timestamp_ns, index.ego_timestamps, index.ego_poses, config.matching.ego_pose_tolerance_ms,
+        ))
+
+    output_dir = config.output_base_dir
+    write_csv(groups, os.path.join(output_dir, "timestamps.csv"))
+    write_ego_pose_csv(groups, ego_poses, config.lidar_key, os.path.join(output_dir, "ego_poses.csv"))
+    _write_detection_csvs(output_dir, metadata)
+
+
+def _run_detection_reuse(
+    config: ClusterConfig,
+    files: list[str],
+    timestamp_groups: list[SampleGroup],
+) -> str:
+    """Read detections from the current bags and reuse sensors from a prior export."""
+    detections = _read_reuse_detections(config.detection_topic, files)
+    detection_timestamps = np.array([timestamp for timestamp, _ in detections], dtype=np.int64)
+    source_root = config.reuse_dataset
+    output_root = config.output_base_dir
+    source_poses, lidar_frame, lidar_to_reference = _prepare_reuse_calibration(config, source_root)
+    metadata = FrameMetadata()
+    groups_by_timestamp = {}
+
+    for group in timestamp_groups:
+        timestamp_ns = group.lidar_timestamps[config.lidar_key]
+        source = build_lidar_output_path(source_root, "", config.lidar_key, timestamp_ns)
+        if not os.path.isfile(source):
+            logger.warning("Missing reused LiDAR sample at ts=%d", timestamp_ns)
+            continue
+
+        detection_slice = find_detection_slice(
+            timestamp_ns, detection_timestamps, config.matching.tolerance_ms,
+        )
+        if detection_slice is None:
+            logger.warning("No matching detections for reused LiDAR sample at ts=%d", timestamp_ns)
+            continue
+
+        matches = detections[detection_slice]
+        detection_frame = matches[0][1].header.frame_id.lstrip("/")
+        if lidar_frame and detection_frame != lidar_frame:
+            raise ValueError(
+                f"Detection frame {detection_frame} does not match configured LiDAR frame {lidar_frame}",
+            )
+
+        selected = _frame_detections(matches, timestamp_ns, config.target_classes)
+        points = read_pcd(source)
+        xyz = _xyz_coordinates(points)
+        metadata.point_counts[timestamp_ns] = _count_points(selected, xyz)
+        if config.cluster:
+            _write_reused_clusters(config, points, xyz, selected, timestamp_ns)
+        else:
+            destination = build_lidar_output_path(output_root, "", config.lidar_key, timestamp_ns)
+            _place_sample(source, destination, config)
+
+        camera_timestamps = _reuse_camera_samples(config, source_root, group)
+        _write_frame_labels(config, timestamp_ns, selected, lidar_to_reference, metadata)
+        # With repeated CSV timestamps, the last processed row supplies the metadata.
+        groups_by_timestamp[timestamp_ns] = SampleGroup(
+            {config.lidar_key: timestamp_ns}, camera_timestamps,
+        )
+
+    ordered_timestamps = sorted(groups_by_timestamp)
+    groups = [groups_by_timestamp[timestamp_ns] for timestamp_ns in ordered_timestamps]
+    write_csv(groups, os.path.join(output_root, "timestamps.csv"))
+    _copy_ego_pose_rows(source_poses, os.path.join(output_root, "ego_poses.csv"), ordered_timestamps)
+    _write_detection_csvs(output_root, metadata)
+    logger.info("Detection reuse complete: %d matched frames", len(groups))
+    return output_root
+
+
+def _read_reuse_detections(topic: str, files: list[str]) -> DetectionMatches:
+    detections = []
+    for bag_path in files:
+        parser = make_parser(bag_path)
+        try:
+            for topic_name, _, type_name, payload in iter_serialized_messages(parser, [topic]):
+                message = decode_message(parser, topic_name, type_name, payload)
+                detections.append((message_timestamp_ns(message), message))
+        finally:
+            del parser
+
+    # Equal header stamps retain the bag order in which they were read.
+    detections.sort(key=itemgetter(0))
+    return detections
+
+
+def _prepare_reuse_calibration(config: ClusterConfig, source_root: str) -> tuple[str, str, np.ndarray | None]:
+    output_root = config.output_base_dir
+    source_path = os.path.abspath(source_root)
+    output_path = os.path.abspath(output_root)
+    if os.path.commonpath((source_path, output_path)) == source_path:
+        raise ValueError("Reuse output.base_dir must be outside the source dataset")
+
+    source_calibration = os.path.join(source_root, "calibration.yaml")
+    if not os.path.isfile(source_calibration):
+        raise FileNotFoundError(f"Reuse dataset has no calibration.yaml: {source_root}")
+    source_poses = os.path.join(source_root, "ego_poses.csv")
+    if not os.path.isfile(source_poses):
+        raise FileNotFoundError(f"Reuse dataset has no ego_poses.csv: {source_root}")
+
+    os.makedirs(output_root, exist_ok=True)
+    output_calibration = os.path.join(output_root, "calibration.yaml")
+    if os.path.lexists(output_calibration):
+        if config.on_existing == "abort":
+            raise FileExistsError(output_calibration)
+        if config.on_existing == "overwrite":
+            os.unlink(output_calibration)
+    if not os.path.exists(output_calibration):
+        shutil.copy2(source_calibration, output_calibration)
+
+    # Labels use the transform from the source dataset even if output calibration is kept.
+    with open(source_calibration) as stream:
+        calibration = yaml.safe_load(stream) or {}
+    lidar_frame = (config.lidar_frame_id or "").lstrip("/")
+    lidar_transform = None
+    for frame, transform in calibration.get("extrinsics", {}).items():
+        if frame.lstrip("/") == lidar_frame:
+            lidar_transform = transform
+            break
+
+    if lidar_frame and lidar_transform is None:
+        raise ValueError(f"Reuse calibration has no extrinsic for LiDAR frame '{lidar_frame}'")
+    if lidar_transform is not None:
+        lidar_transform = np.asarray(lidar_transform)
+    return source_poses, lidar_frame, lidar_transform
+
+
+def _reuse_camera_samples(
+    config: ClusterConfig,
+    source_root: str,
+    group: SampleGroup,
+) -> dict[str, int | None]:
+    timestamps = {}
+    for camera in config.cameras:
+        timestamps[camera.key] = None
+        timestamp_ns = group.camera_timestamps.get(camera.key)
+        if timestamp_ns is None:
+            continue
+
+        source = build_camera_output_path(source_root, "", camera.key, timestamp_ns)
+        if not os.path.isfile(source):
+            logger.warning("Missing reused camera %s image at ts=%d", camera.key, timestamp_ns)
+            continue
+
+        destination = build_camera_output_path(config.output_base_dir, "", camera.key, timestamp_ns)
+        _place_sample(source, destination, config)
+        timestamps[camera.key] = timestamp_ns
+    return timestamps
+
+
+def _place_sample(source: str, destination: str, config: ClusterConfig) -> bool:
+    # Unlink the destination first so overwrite cannot write through an old symlink.
+    if os.path.lexists(destination):
+        if config.on_existing == "skip":
+            return False
+        if config.on_existing == "abort":
+            raise FileExistsError(destination)
+        os.unlink(destination)
+
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    if config.copy_samples:
+        shutil.copy2(source, destination)
+    else:
+        os.symlink(os.path.abspath(source), destination)
+    return True
+
+
+def _copy_ego_pose_rows(source: str, destination: str, timestamps: list[int]) -> None:
+    # Keep the source CSV schema and row order when filtering to exported frames.
+    wanted = {ns_to_filename(timestamp_ns) for timestamp_ns in timestamps}
+    with open(source, newline="") as src, open(destination, "w", newline="") as dst:
+        reader = csv.DictReader(src)
+        writer = csv.DictWriter(dst, fieldnames=reader.fieldnames)
+        writer.writeheader()
+        for row in reader:
+            if row.get("stamp") in wanted:
+                writer.writerow(row)
+
 
 def detection_to_bbox(detection) -> np.ndarray:
     """Convert a measurement to [cx, cy, cz, length, width, height, yaw]."""
-    bbox = np.array([
-        detection.x_cog, detection.y_cog, detection.z_cog,
-        detection.length, detection.width, detection.height, detection.orientation,
-    ], dtype=np.float64)
+    bbox = np.array(
+        [
+            detection.x_cog,
+            detection.y_cog,
+            detection.z_cog,
+            detection.length,
+            detection.width,
+            detection.height,
+            detection.orientation,
+        ],
+        dtype=np.float64,
+    )
     if not np.isfinite(bbox).all() or np.any(bbox[3:6] <= 0):
         raise ValueError("Bounding box must have finite values and positive dimensions")
     return bbox
 
 
 def points_in_bbox(xyz: np.ndarray, bbox: np.ndarray) -> np.ndarray:
-    """Include box boundaries and exclude nonfinite points; yaw is in radians."""
-    c, s = np.cos(bbox[6]), np.sin(bbox[6])
-    rotation = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+    """Include box boundaries and exclude nonfinite points. Yaw is in radians."""
+    cosine = np.cos(bbox[6])
+    sine = np.sin(bbox[6])
+    rotation = np.array([[cosine, -sine, 0], [sine, cosine, 0], [0, 0, 1]])
+
+    # Work in box-local coordinates and leave invalid input points masked out.
     mask = np.isfinite(xyz).all(axis=1)
-    local = (xyz[mask] - bbox[:3]) @ rotation
-    mask[mask] = (np.abs(local) <= bbox[3:6] / 2 + 1e-9).all(axis=1)
+    local_points = (xyz[mask] - bbox[:3]) @ rotation
+    half_dimensions = bbox[3:6] / 2
+    mask[mask] = (np.abs(local_points) <= half_dimensions + 1e-9).all(axis=1)
     return mask
 
 
@@ -69,357 +491,225 @@ def extract_detection_clusters(
     """Write one binary PCD per valid detection, preserving all point fields."""
     if cloud_msg.header.frame_id.lstrip("/") != detection_msg.header.frame_id.lstrip("/"):
         raise ValueError("Point cloud and detections must be in the same frame")
+
     detections = _selected_detections(detection_msg, target_classes)
     if not detections:
         return 0
 
-    points = read_cloud_points(cloud_msg)
-    xyz = np.column_stack([points[name] for name in ("x", "y", "z")]).astype(np.float64)
+    xyz = _xyz_coordinates(read_cloud_points(cloud_msg))
     written = 0
     for detection in detections:
-        detection_id = int(detection.box_id)
-        cluster_dir = os.path.join(output_dir, "clusters", str(int(detection.meas_class)))
-        out_path = os.path.join(cluster_dir, f"{ns_to_filename(timestamp_ns)}_{detection_id}.pcd")
-        if os.path.exists(out_path):
-            if on_existing == "skip":
-                continue
-            elif on_existing == "abort":
-                raise FileExistsError(f"Output file already exists: {out_path}")
+        path = _cluster_path(output_dir, timestamp_ns, detection)
+        if not _should_write_pcd(path, on_existing):
+            continue
 
+        # Honor the output policy before validating boxes for the standalone caller.
         try:
             bbox = detection_to_bbox(detection)
         except ValueError as exc:
-            logger.warning("Skipping detection %d at ts=%d: %s", detection_id, timestamp_ns, exc)
+            logger.warning("Skipping detection %d at ts=%d: %s", detection.box_id, timestamp_ns, exc)
             continue
-        mask = points_in_bbox(xyz, bbox)
-        os.makedirs(cluster_dir, exist_ok=True)
-        _write_pcd(cloud_msg, out_path, point_indices=mask)
+        _write_cloud_subset(cloud_msg, path, points_in_bbox(xyz, bbox))
         written += 1
     return written
 
 
-def run_cluster_extraction(config, files: list[str]) -> str:
-    """Extract clusters using the shared detection-driven Stage-1 pipeline."""
-    return run_detection_extraction(config, files, cluster=True)
-
-
-def run_detection_extraction(config, files: list[str], cluster: bool = False, timestamp_groups=None) -> str:
-    """Match detections to clouds and export samples or clusters plus frame labels."""
-    stage1_out = config.output_base_dir
-
-    logger.info(">>> STAGE 1: FROM DETECTIONS (%s)", "clusters" if cluster else "full clouds")
-    logger.info("BAG input   : %s (%d files)", config.bag_dir, len(files))
-    logger.info("Output dir  : %s", stage1_out)
-
-    lidar_index = []
-    detection_index = []
-    camera_index = {cam.topic: [] for cam in config.cameras}
-    ego_ts = []
-    ego_poses = []
-    topics = sorted({config.lidar_topic, config.detection_topic, config.ego_pose.topic} | set(camera_index))
-    static_transforms = TFStaticParser() if config.urdf_path == "from_tf_static" else None
-    camera_info = CameraInfoParser(config.cameras) if config.calibration_yaml == "from_camera_info" else None
-    if static_transforms is not None:
-        topics = sorted(set(topics) | {"/tf_static"})
-    if camera_info is not None:
-        topics = sorted(set(topics) | camera_info.topics)
-
-    # Pass 1: collect all topics together and retain only the small messages.
-    for fpath in files:
-        parser = make_parser(fpath)
-        logger.info("Pass 1: indexing headers, detections and ego poses from %s ...", os.path.basename(fpath))
-        cloud_number = 0
-        camera_numbers = dict.fromkeys(camera_index, 0)
-        try:
-            for topic, recording_timestamp, type_name, payload in _iter_serialized_messages(parser, topics):
-                message = _decode_message(parser, topic, type_name, payload)
-                if topic == "/tf_static" and static_transforms is not None:
-                    static_transforms.add_message(message)
-                if camera_info is not None and topic in camera_info.topics:
-                    camera_info.add_message(topic, message)
-                elif topic == config.ego_pose.topic:
-                    for ts, pose in iter_ego_poses(message, config.ego_pose.parent_frame, config.ego_pose.child_frame):
-                        ego_ts.append(ts)
-                        ego_poses.append(pose)
-                elif topic != "/tf_static":
-                    stamp = message.header.stamp
-                    timestamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
-                    if topic == config.lidar_topic:
-                        lidar_index.append((timestamp_ns, recording_timestamp, fpath, cloud_number))
-                        cloud_number += 1
-                    elif topic in camera_index:
-                        camera_index[topic].append((timestamp_ns, recording_timestamp, fpath, camera_numbers[topic]))
-                        camera_numbers[topic] += 1
-                    else:
-                        detection_index.append((timestamp_ns, recording_timestamp, fpath, message))
-                del message
-        finally:
-            del parser
-
-    if not lidar_index or (not detection_index and timestamp_groups is None):
-        raise ValueError("The bag must contain messages on both the LiDAR and detection topics")
-    lidar_index.sort()
-    detection_index.sort(key=lambda entry: entry[:3])
-    lidar_ts = np.array([entry[0] for entry in lidar_index], dtype=np.int64)
-
-    if ego_ts:
-        all_ego_ts = np.array(ego_ts, dtype=np.int64)
-        all_ego_data = np.array(ego_poses, dtype=np.float64)
-        order = np.argsort(all_ego_ts)
-        all_ego_ts = all_ego_ts[order]
-        all_ego_data = all_ego_data[order]
-    else:
-        all_ego_ts = np.array([], dtype=np.int64)
-        all_ego_data = np.zeros((0, 7), dtype=np.float64)
-        logger.warning("No ego poses found; ego_poses.csv will have empty numeric cells.")
-
-    # Match headers globally before extracting, including across bag boundaries.
-    cloud_detections = {}
-    unmatched = 0
-    if timestamp_groups is None:
-        for timestamp_ns, _, _, detection_msg in detection_index:
-            idx = _find_closest_within(timestamp_ns, lidar_ts, config.matching.tolerance_ms)
-            if idx is None:
-                unmatched += 1
-                logger.warning("No matching point cloud for detections at ts=%d", timestamp_ns)
-                continue
-            _, _, cloud_path, cloud_number = lidar_index[idx]
-            file_matches = cloud_detections.setdefault(cloud_path, {})
-            file_matches.setdefault(cloud_number, []).append((timestamp_ns, detection_msg))
-
-        # Sample matched clouds by header timestamp, including across bag boundaries.
-        next_target = None
-        for timestamp_ns, _, cloud_path, cloud_number in lidar_index:
-            file_matches = cloud_detections.get(cloud_path, {})
-            if cloud_number not in file_matches:
-                continue
-            if next_target is not None and timestamp_ns < next_target:
-                del file_matches[cloud_number]
-                continue
-            next_target = timestamp_ns + int(config.matching.sampling_interval_ms * 1_000_000)
-    else:
-        requested_groups = {group.lidar_timestamps[config.lidar_key]: group for group in timestamp_groups}
-        detection_ts = np.array([entry[0] for entry in detection_index], dtype=np.int64)
-        for timestamp_ns in requested_groups:
-            idx = int(np.searchsorted(lidar_ts, timestamp_ns))
-            if idx == len(lidar_ts) or lidar_ts[idx] != timestamp_ns:
-                logger.warning("No exact LiDAR frame at CSV ts=%d", timestamp_ns)
-                continue
-            detection_idx = _find_closest_within(timestamp_ns, detection_ts, config.matching.tolerance_ms) if len(detection_ts) else None
-            if detection_idx is None:
-                unmatched += 1
-                logger.warning("No matching detections for CSV ts=%d", timestamp_ns)
-                continue
-            detection_timestamp = int(detection_ts[detection_idx])
-            _, _, cloud_path, cloud_number = lidar_index[idx]
-            cloud_detections.setdefault(cloud_path, {})[cloud_number] = [
-                (ts, message) for ts, _, _, message in detection_index if ts == detection_timestamp
-            ]
-
-    # Match optional cameras to selected cloud headers, retaining only their locations.
-    matched_cloud_ts = sorted({
-        ts for ts, _, path, number in lidar_index
-        if number in cloud_detections.get(path, {})
-    })
-    frame_camera_timestamps = {ts: {} for ts in matched_cloud_ts}
-    camera_matches = {}
-    for cam in config.cameras:
-        entries = sorted(camera_index[cam.topic])
-        camera_ts = np.array([entry[0] for entry in entries], dtype=np.int64)
-        for timestamp_ns in matched_cloud_ts:
-            frame_camera_timestamps[timestamp_ns][cam.key] = None
-            if timestamp_groups is None:
-                idx = _find_closest_within(timestamp_ns, camera_ts, config.matching.tolerance_ms) if len(camera_ts) else None
-            else:
-                image_ts = requested_groups[timestamp_ns].camera_timestamps.get(cam.key)
-                if image_ts is None:
-                    continue
-                idx = int(np.searchsorted(camera_ts, image_ts))
-                if idx == len(camera_ts) or camera_ts[idx] != image_ts:
-                    logger.warning("No exact camera %s frame at CSV ts=%d", cam.key, image_ts)
-                    continue
-            if idx is None:
-                logger.warning("No matching camera %s for cloud at ts=%d", cam.key, timestamp_ns)
-                continue
-            image_ts, _, image_path, image_number = entries[idx]
-            frame_camera_timestamps[timestamp_ns][cam.key] = image_ts
-            file_matches = camera_matches.setdefault(image_path, {})
-            file_matches.setdefault((cam.topic, image_number), {})[cam.key] = (cam, image_ts)
-    camera_frame_ids = [
-        cam.frame_id for cam in config.cameras
-        if any(timestamps.get(cam.key) is not None for timestamps in frame_camera_timestamps.values())
-    ]
-
-    # Pass 2: stream selected clouds and images without per-message bag queries.
-    written = 0
-    images_written = 0
-    exported_camera_ts = {cam.key: set() for cam in config.cameras}
-    frame_confidences = {}
-    frame_point_counts = {}
-    calibration = None
-    for fpath in files:
-        file_matches = cloud_detections.get(fpath, {})
-        file_camera_matches = camera_matches.get(fpath, {})
-        if not file_matches and not file_camera_matches:
-            continue
-        parser = make_parser(fpath)
-        logger.info("Pass 2: extracting %d matched clouds and %d images from %s ...",
-                    len(file_matches), len(file_camera_matches), os.path.basename(fpath))
-        extraction_topics = sorted(
-            ({config.lidar_topic} if file_matches else set()) | {topic for topic, _ in file_camera_matches}
-        )
-        message_numbers = dict.fromkeys(extraction_topics, 0)
-        try:
-            for topic, _, type_name, payload in _iter_serialized_messages(parser, extraction_topics):
-                message_number = message_numbers[topic]
-                message_numbers[topic] += 1
-                if topic != config.lidar_topic:
-                    image_matches = file_camera_matches.pop((topic, message_number), None)
-                    if image_matches is None:
-                        continue
-                    img_msg = _decode_message(parser, topic, type_name, payload)
-                    for cam, image_ts in image_matches.values():
-                        out_path = build_camera_output_path(stage1_out, "", cam.key, image_ts)
-                        images_written += write_camera_frame(img_msg, out_path, cam.compressed, config.on_existing)
-                        if os.path.isfile(out_path):
-                            exported_camera_ts[cam.key].add(image_ts)
-                    del img_msg
-                    if not file_matches and not file_camera_matches:
-                        break
-                    continue
-                cloud_number = message_number
-                matches = file_matches.pop(cloud_number, None)
-                if matches is None:
-                    continue
-                cloud_msg = _decode_message(parser, topic, type_name, payload)
-                cloud_frame = cloud_msg.header.frame_id.lstrip("/")
-                if calibration is None:
-                    lidar_frame = config.lidar_frame_id or cloud_msg.header.frame_id
-                    if lidar_frame.lstrip("/") != cloud_frame:
-                        raise ValueError("Configured LiDAR frame_id differs from the exported cloud frame")
-                    calibration = extract_calibration(
-                        urdf_path=config.urdf_path, intrinsics_yaml_path=config.calibration_yaml, stage1_out=stage1_out,
-                        reference_frame=config.reference_frame or config.ego_pose.child_frame,
-                        sensor_links=list(dict.fromkeys([lidar_frame, config.ego_pose.child_frame] + camera_frame_ids)),
-                        camera_frame_ids=camera_frame_ids, tf_static=static_transforms,
-                        camera_info=camera_info,
-                    )
-                    lidar_to_reference = calibration["extrinsics"].get(lidar_frame)
-                elif lidar_frame.lstrip("/") != cloud_frame:
-                    raise ValueError("Exported point clouds must share the configured LiDAR frame")
-                stamp = cloud_msg.header.stamp
-                timestamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
-                for _, detection_msg in matches:
-                    if cloud_msg.header.frame_id.lstrip("/") != detection_msg.header.frame_id.lstrip("/"):
-                        raise ValueError("Point cloud and detections must be in the same frame")
-                detections = _frame_detections(matches, timestamp_ns, config.target_classes)
-                if cluster:
-                    detection_msg = copy(matches[0][1])
-                    detection_msg.meas_array = [detection for detection, _ in detections]
-                    detection_msg.count = len(detections)
-                    written += extract_detection_clusters(cloud_msg, detection_msg, timestamp_ns, stage1_out, config.on_existing)
-                else:
-                    written += _write_lidar_sample(cloud_msg, timestamp_ns, stage1_out, config.on_existing, config.lidar_key)
-                write_detection_labels(detections, timestamp_ns, stage1_out, config.on_existing, transform=lidar_to_reference)
-                frame_confidences[timestamp_ns] = {int(detection.box_id): float(detection.score) for detection, _ in detections}
-                frame_point_counts[timestamp_ns] = {}
-                if detections:
-                    points = read_cloud_points(cloud_msg)
-                    xyz = np.column_stack([points[name] for name in ("x", "y", "z")]).astype(np.float64)
-                    frame_point_counts[timestamp_ns] = {
-                        int(detection.box_id): int(np.count_nonzero(points_in_bbox(xyz, bbox)))
-                        for detection, bbox in detections
-                    }
-                    del points, xyz
-                del cloud_msg
-                if not file_matches and not file_camera_matches:
-                    break
-            if file_matches or file_camera_matches:
-                raise ValueError(f"Matched point clouds or images missing from {fpath}")
-        finally:
-            del parser
-
-    ref_key = config.lidar_key
-    groups = [SampleGroup(
-        lidar_timestamps={ref_key: ts},
-        camera_timestamps={
-            key: image_ts if image_ts in exported_camera_ts[key] else None
-            for key, image_ts in frame_camera_timestamps[ts].items()
-        },
-    ) for ts in sorted(frame_confidences)]
-    ego_pose_results = [
-        find_ego_pose_at(ts, all_ego_ts, all_ego_data, config.matching.ego_pose_tolerance_ms)
-        for ts in sorted(frame_confidences)
-    ]
-    write_csv(groups, os.path.join(stage1_out, "timestamps.csv"))
-    write_ego_pose_csv(
-        groups, ego_pose_results, ref_key, os.path.join(stage1_out, "ego_poses.csv"),
-    )
-    write_detection_confidence_csv(frame_confidences, os.path.join(stage1_out, "detection_confidences.csv"))
-    write_detection_point_count_csv(frame_point_counts, os.path.join(stage1_out, "detection_point_counts.csv"))
-    logger.info("Detection extraction complete: %d PCD files, %d images written, %d unmatched messages",
-                written, images_written, unmatched)
-    return stage1_out
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _active_detections(detection_msg):
-    if not 0 <= detection_msg.count <= len(detection_msg.meas_array):
+def _active_detections(message):
+    if not 0 <= message.count <= len(message.meas_array):
         raise ValueError("Detection count exceeds measurement array length")
-    return detection_msg.meas_array[:detection_msg.count]
+    return message.meas_array[:message.count]
 
 
-def _has_duplicate_ids(detections):
+def _has_duplicate_ids(detections) -> bool:
     return len({int(detection.box_id) for detection in detections}) != len(detections)
 
 
-def _selected_detections(detection_msg, target_classes):
-    active = _active_detections(detection_msg)
+def _selected_detections(message, target_classes: list[int] | None):
+    active = _active_detections(message)
     use_local_ids = _has_duplicate_ids(active)
     detections = []
     for index, detection in enumerate(active):
         if target_classes is not None and detection.meas_class not in target_classes:
             continue
         if use_local_ids:
-            # Index before filtering so IDs stay consistent across exports.
-            # Copy to leave the recorded message unchanged.
+            # Index before filtering and copy before setting IDs on the exported objects.
             detection = copy(detection)
             detection.box_id = index
         detections.append(detection)
     return detections
 
 
-def _frame_detections(matches, cloud_timestamp: int, target_classes):
-    """Merge unique IDs, or choose the nearest message for frame-local IDs."""
-    if any(_has_duplicate_ids(_active_detections(message)) for _, message in matches):
-        # Array indices cannot associate objects across messages. Use one
-        # complete observation instead of merging unrelated boxes by index.
-        matches = [min(matches, key=lambda item: (abs(item[0] - cloud_timestamp), item[0]))]
+def _frame_detections(
+    matches: DetectionMatches,
+    cloud_timestamp: int,
+    target_classes: list[int] | None,
+) -> DetectionBoxes:
+    """Merge unique IDs or use the nearest message when IDs are local to a message."""
+    has_local_ids = any(_has_duplicate_ids(_active_detections(message)) for _, message in matches)
+    if has_local_ids:
+        # Array indices cannot associate objects across detection messages.
+        _, _, closest_index = min(
+            (abs(timestamp - cloud_timestamp), timestamp, index)
+            for index, (timestamp, _) in enumerate(matches)
+        )
+        matches = [matches[closest_index]]
+
     selected = {}
-    for detection_timestamp, detection_msg in matches:
-        for detection in _selected_detections(detection_msg, target_classes):
+    for detection_timestamp, message in matches:
+        rank = (abs(detection_timestamp - cloud_timestamp), detection_timestamp)
+        for detection in _selected_detections(message, target_classes):
             try:
                 bbox = detection_to_bbox(detection)
             except ValueError as exc:
                 logger.warning("Skipping detection %d at ts=%d: %s", detection.box_id, detection_timestamp, exc)
                 continue
-            rank = (abs(detection_timestamp - cloud_timestamp), detection_timestamp)
             detection_id = int(detection.box_id)
-            if detection_id not in selected or rank < selected[detection_id][0]:
+            previous = selected.get(detection_id)
+            if previous is None or rank < previous[0]:
                 selected[detection_id] = (rank, detection, bbox)
-    return [(selected[detection_id][1], selected[detection_id][2]) for detection_id in sorted(selected)]
+
+    boxes = []
+    for detection_id in sorted(selected):
+        _, detection, bbox = selected[detection_id]
+        boxes.append((detection, bbox))
+    return boxes
 
 
-def _write_lidar_sample(cloud_msg, timestamp_ns: int, output_dir: str, on_existing: str, lidar_key: str = "lidar") -> bool:
-    out_path = build_lidar_output_path(output_dir, "", lidar_key, timestamp_ns)
-    if os.path.exists(out_path):
+def _xyz_coordinates(points: np.ndarray) -> np.ndarray:
+    return np.column_stack((points["x"], points["y"], points["z"])).astype(np.float64)
+
+
+def _count_points(detections: DetectionBoxes, xyz: np.ndarray) -> dict[int, int]:
+    counts = {}
+    for detection, bbox in detections:
+        counts[int(detection.box_id)] = int(np.count_nonzero(points_in_bbox(xyz, bbox)))
+    return counts
+
+
+def _write_frame_labels(
+    config: ClusterConfig,
+    timestamp_ns: int,
+    detections: DetectionBoxes,
+    transform,
+    metadata: FrameMetadata,
+) -> None:
+    # Keep confidence values in the same detection ID space as the exported labels.
+    write_detection_labels(
+        detections, timestamp_ns, config.output_base_dir, config.on_existing, transform=transform,
+    )
+    metadata.confidences[timestamp_ns] = {
+        int(detection.box_id): float(detection.score) for detection, _ in detections
+    }
+
+
+def _write_detection_csvs(output_dir: str, metadata: FrameMetadata) -> None:
+    write_detection_confidence_csv(
+        metadata.confidences, os.path.join(output_dir, "detection_confidences.csv"),
+    )
+    write_detection_point_count_csv(
+        metadata.point_counts, os.path.join(output_dir, "detection_point_counts.csv"),
+    )
+
+
+def _cluster_path(output_dir: str, timestamp_ns: int, detection) -> str:
+    class_id = str(int(detection.meas_class))
+    filename = f"{ns_to_filename(timestamp_ns)}_{int(detection.box_id)}.pcd"
+    return os.path.join(output_dir, "clusters", class_id, filename)
+
+
+def _should_write_pcd(path: str, on_existing: str) -> bool:
+    if os.path.exists(path):
         if on_existing == "skip":
             return False
-        elif on_existing == "abort":
-            raise FileExistsError(f"Output file already exists: {out_path}")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    _write_pcd(cloud_msg, out_path)
+        if on_existing == "abort":
+            raise FileExistsError(f"Output file already exists: {path}")
     return True
+
+
+def _write_lidar_sample(
+    cloud_msg, timestamp_ns: int, output_dir: str, on_existing: str, lidar_key: str = "lidar",
+) -> bool:
+    path = build_lidar_output_path(output_dir, "", lidar_key, timestamp_ns)
+    if not _should_write_pcd(path, on_existing):
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _write_pcd(cloud_msg, path)
+    return True
+
+
+def _write_bag_clusters(
+    cloud,
+    detections: DetectionBoxes,
+    xyz: np.ndarray,
+    timestamp_ns: int,
+    output_dir: str,
+    on_existing: str,
+) -> int:
+    written = 0
+    for detection, bbox in detections:
+        path = _cluster_path(output_dir, timestamp_ns, detection)
+        if not _should_write_pcd(path, on_existing):
+            continue
+        _write_cloud_subset(cloud, path, points_in_bbox(xyz, bbox))
+        written += 1
+    return written
+
+
+def _write_cloud_subset(cloud, path: str, mask: np.ndarray) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _write_pcd(cloud, path, point_indices=mask)
+
+
+def _write_reused_clusters(
+    config: ClusterConfig,
+    points: np.ndarray,
+    xyz: np.ndarray,
+    detections: DetectionBoxes,
+    timestamp_ns: int,
+) -> None:
+    for detection, bbox in detections:
+        path = _cluster_path(config.output_base_dir, timestamp_ns, detection)
+        if os.path.lexists(path):
+            if config.on_existing == "skip":
+                continue
+            if config.on_existing == "abort":
+                raise FileExistsError(path)
+        _write_pcd_subset(path, points[points_in_bbox(xyz, bbox)])
+
+
+def _write_pcd_subset(destination: str, points: np.ndarray) -> None:
+    # Preserve every field's scalar type and element count in the cropped PCD.
+    fields = points.dtype.names
+    sizes = []
+    counts = []
+    types = []
+    type_codes = {"f": "F", "i": "I"}
+    for name in fields:
+        dtype = points.dtype.fields[name][0]
+        if dtype.subdtype is None:
+            base_dtype = dtype
+            count = 1
+        else:
+            base_dtype, shape = dtype.subdtype
+            count = int(np.prod(shape))
+        sizes.append(str(base_dtype.itemsize))
+        counts.append(str(count))
+        types.append(type_codes.get(base_dtype.kind, "U"))
+
+    header = [
+        "# .PCD v0.7 - Point Cloud Data file format",
+        "VERSION 0.7",
+        "FIELDS " + " ".join(fields),
+        "SIZE " + " ".join(sizes),
+        "TYPE " + " ".join(types),
+        "COUNT " + " ".join(counts),
+        f"WIDTH {len(points)}",
+        "HEIGHT 1",
+        "VIEWPOINT 0 0 0 1 0 0 0",
+        f"POINTS {len(points)}",
+        "DATA binary",
+    ]
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    with open(destination, "wb") as stream:
+        stream.write(("\n".join(header) + "\n").encode("ascii"))
+        stream.write(points.tobytes())

@@ -15,6 +15,8 @@ from typing import Dict, Iterator, List, Optional, Tuple
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from utils.timestamp_utils import message_timestamp_ns
+
 logger = logging.getLogger(__name__)
 
 _MS_TO_NS = 1_000_000
@@ -86,12 +88,15 @@ def load_ego_poses_from_parser(
 def iter_ego_poses(tf_msg, parent_frame: str, child_frame: str) -> Iterator[Tuple[int, List[float]]]:
     """Yield matching TF header timestamps and [x, y, z, qx, qy, qz, qw] rows."""
     for transform in tf_msg.transforms:
-        if transform.header.frame_id == parent_frame and transform.child_frame_id == child_frame:
-            stamp = transform.header.stamp
-            ts_ns = stamp.sec * 1_000_000_000 + stamp.nanosec
-            tr = transform.transform.translation
-            rot = transform.transform.rotation
-            yield ts_ns, [tr.x, tr.y, tr.z, rot.x, rot.y, rot.z, rot.w]
+        if transform.header.frame_id != parent_frame or transform.child_frame_id != child_frame:
+            continue
+        timestamp_ns = message_timestamp_ns(transform)
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        yield timestamp_ns, [
+            translation.x, translation.y, translation.z,
+            rotation.x, rotation.y, rotation.z, rotation.w,
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -125,18 +130,18 @@ def find_ego_pose_at(
         )
         return None
 
-    idx   = int(np.argmin(np.abs(ts_arr - np.int64(ref_ts))))
-    dt_ns = int(abs(int(ts_arr[idx]) - ref_ts))
-    dt_ms = dt_ns / _MS_TO_NS
+    closest_index = int(np.argmin(np.abs(ts_arr - np.int64(ref_ts))))
+    distance_ns = int(abs(int(ts_arr[closest_index]) - ref_ts))
 
-    if dt_ns > int(tolerance_ms * _MS_TO_NS):
+    # The tolerance controls the warning. The nearest available pose is still exported.
+    if distance_ns > int(tolerance_ms * _MS_TO_NS):
         logger.warning(
             "Ego pose fallback: ref_ts=%d - nearest pose is %.2f ms away "
             "(tolerance=%.1f ms). Using nearest available pose.",
-            ref_ts, dt_ms, tolerance_ms,
+            ref_ts, distance_ns / _MS_TO_NS, tolerance_ms,
         )
 
-    return _pose_dict_from_row(pose_arr[idx])
+    return _pose_dict_from_row(pose_arr[closest_index])
 
 
 # ---------------------------------------------------------------------------

@@ -15,21 +15,31 @@ _CLASS_NAMES = {
 }
 
 
-def write_detection_labels(detections, timestamp_ns: int, output_dir: str, on_existing: str = "skip", transform=None) -> bool:
+def write_detection_labels(
+    detections,
+    timestamp_ns: int,
+    output_dir: str,
+    on_existing: str = "skip",
+    transform=None,
+) -> bool:
     """Write grouped (message, bbox) pairs, optionally transformed into the merge reference."""
     out_path = os.path.join(output_dir, "labels", "lidar", f"{ns_to_filename(timestamp_ns)}.json")
     if os.path.exists(out_path):
         if on_existing == "skip":
             return False
-        elif on_existing == "abort":
+        if on_existing == "abort":
             raise FileExistsError(f"Output file already exists: {out_path}")
 
     labels = []
     matrix = np.eye(4) if transform is None else np.asarray(transform, dtype=np.float64)
     for detection, bbox in detections:
         x, y, z, length, width, height, yaw = [float(value) for value in bbox]
-        x, y, z = (matrix[:3, :3] @ [x, y, z] + matrix[:3, 3]).tolist()
-        roll, pitch, yaw = (Rotation.from_matrix(matrix[:3, :3]) * Rotation.from_euler("z", yaw)).as_euler("xyz").tolist()
+        # Apply the same reference-frame transform to the box center and orientation.
+        rotation_matrix = matrix[:3, :3]
+        x, y, z = (rotation_matrix @ [x, y, z] + matrix[:3, 3]).tolist()
+        reference_rotation = Rotation.from_matrix(rotation_matrix)
+        box_rotation = Rotation.from_euler("z", yaw)
+        roll, pitch, yaw = (reference_rotation * box_rotation).as_euler("xyz").tolist()
         class_id = int(detection.meas_class)
         labels.append({
             "obj_id": str(detection.box_id),

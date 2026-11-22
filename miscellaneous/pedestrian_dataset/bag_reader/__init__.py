@@ -1,26 +1,21 @@
-"""
-Thin adapter layer over the existing MCAPBagFileParser / BagFileParser.
-Import from here rather than from the concrete files so the rest of the pipeline is insulated from the storage-format details.
-"""
-
-from .McapBagReader import MCAPBagFileParser, read_points as read_points_mcap
-from .Db3BagReader  import BagFileParser,     read_points as read_points_db3
+"""Read serialized bag messages through the MCAP and SQLite backends."""
 
 import os
+
 from rclpy.serialization import deserialize_message
+
+from .Db3BagReader import BagFileParser, read_points as read_points_db3
+from .McapBagReader import MCAPBagFileParser, read_points as read_points_mcap
 
 
 def make_parser(bag_file: str):
-    """
-    Return the correct parser instance for "bag_file".
-    """
-    ext = os.path.splitext(bag_file)[1].lower()
-    if ext == ".mcap":
+    """Open the bag file with the parser for its storage extension."""
+    extension = os.path.splitext(bag_file)[1].lower()
+    if extension == ".mcap":
         return MCAPBagFileParser(bag_file)
-    elif ext == ".db3":
+    if extension == ".db3":
         return BagFileParser(bag_file)
-    else:
-        raise ValueError(f"Unsupported bag file extension: '{ext}'. Expected .mcap or .db3")
+    raise ValueError(f"Unsupported bag file extension: '{extension}'. Expected .mcap or .db3")
 
 
 def read_points(cloud, field_names=None, skip_nans=False):
@@ -35,21 +30,25 @@ def iter_serialized_messages(parser, topics: list[str]):
     if hasattr(parser, "reader"):
         for schema, channel, record in parser.reader.iter_messages(topics=topics):
             yield channel.topic, record.log_time, schema.name, record.data
-    else:
-        placeholders = ",".join("?" for _ in topics)
-        rows = parser.conn.execute(
-            "SELECT topics.name,messages.timestamp,topics.type,messages.data "
-            "FROM messages JOIN topics ON messages.topic_id=topics.id "
-            f"WHERE topics.name IN ({placeholders}) ORDER BY messages.timestamp,messages.rowid",
-            tuple(topics),
-        )
-        yield from rows
+        return
+
+    # Use row ID to keep equal recording timestamps in a stable order across passes.
+    placeholders = ",".join("?" for _ in topics)
+    rows = parser.conn.execute(
+        "SELECT topics.name, messages.timestamp, topics.type, messages.data "
+        "FROM messages JOIN topics ON messages.topic_id = topics.id "
+        f"WHERE topics.name IN ({placeholders}) ORDER BY messages.timestamp, messages.rowid",
+        tuple(topics),
+    )
+    yield from rows
 
 
 def decode_message(parser, topic: str, type_name: str, payload):
+    """Deserialize a payload with the bag backend's message type resolution."""
     if hasattr(parser, "reader"):
         message = parser._decode(topic, type_name, payload)
         if message is None:
             raise ValueError(f"Cannot decode message for topic {topic}")
         return message
-    return deserialize_message(payload, parser.topic_msg_message[topic])
+    message_type = parser.topic_msg_message[topic]
+    return deserialize_message(payload, message_type)

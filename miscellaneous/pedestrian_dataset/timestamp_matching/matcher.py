@@ -43,9 +43,14 @@ def _find_closest_within(target: int, array: np.ndarray, tolerance_ms: float) ->
     Return the index of the closest element within (+-)tolerance_ms, or None.
     Adapted from polimove_tools `find_closest_idx_saturated`.
     """
-    idx = _find_closest_idx(target, array)
-    if abs(int(target) - int(array[idx])) <= int(tolerance_ms * _MS_TO_NS):
-        return idx
+    if not len(array):
+        return None
+
+    # argmin keeps the first entry when two timestamps are equally close.
+    closest_index = _find_closest_idx(target, array)
+    distance_ns = abs(int(target) - int(array[closest_index]))
+    if distance_ns <= int(tolerance_ms * _MS_TO_NS):
+        return closest_index
     return None
 
 

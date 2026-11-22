@@ -222,21 +222,25 @@ def extract_calibration(
         extrinsic_parser = URDFParser(urdf_path)
 
     if sensor_links is None:
-        sensor_links = sorted(tf_static.frames) if urdf_path == "from_tf_static" else _infer_sensor_links(extrinsic_parser)
+        if urdf_path == "from_tf_static":
+            sensor_links = sorted(tf_static.frames)
+        else:
+            sensor_links = _infer_sensor_links(extrinsic_parser)
     else:
         logger.info("Using %d sensor link(s) from vehicle settings.", len(sensor_links))
 
-    # Compute T_sensor_to_reference_frame for every sensor.
+    # Express each sensor's pose in the common reference frame.
     extrinsics: Dict[str, list] = {}
     for link in sensor_links:
-        T = extrinsic_parser.get_transform(link, reference_frame)
-        if T is not None:
-            extrinsics[link] = T.tolist()
-        else:
-            if urdf_path == "from_tf_static":
-                raise ValueError(f"No /tf_static transform path from '{link}' to reference frame '{reference_frame}'")
-            logger.warning("Could not compute transform for '%s'; skipping.", link)
+        transform = extrinsic_parser.get_transform(link, reference_frame)
+        if transform is not None:
+            extrinsics[link] = transform.tolist()
+            continue
+        if urdf_path == "from_tf_static":
+            raise ValueError(f"No /tf_static transform path from '{link}' to reference frame '{reference_frame}'")
+        logger.warning("Could not compute transform for '%s'; skipping.", link)
 
+    # An explicit empty camera list disables intrinsics for this export.
     intrinsics = {}
     if camera_frame_ids != [] and intrinsics_yaml_path:
         if intrinsics_yaml_path == "from_camera_info":

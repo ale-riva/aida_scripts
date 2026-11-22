@@ -2,9 +2,9 @@
 Writes the Stage-1 ego_poses.csv file.
 
 Schema
-header, x, y, z, roll, pitch, yaw
+stamp, x, y, z, roll, pitch, yaw
 
-header           : canonical filename timestamp of the reference LiDAR frame
+stamp            : canonical filename timestamp of the reference LiDAR frame
                    (<YYYYMMDD_HHMMSS_ns> identical to the reference sensor's .pcd stem)
 x, y, z          : ego translation in metres, expressed in the world frame
 roll, pitch, yaw : intrinsic XYZ Euler angles in radians, derived from the pose quaternion
@@ -64,14 +64,15 @@ def write_ego_pose_csv(
         writer.writerow(_COLUMNS)
 
         for group, pose in zip(groups, ego_poses):
-            ref_ts = group.lidar_timestamps[ref_key]
-            header = ns_to_filename(ref_ts)
+            # Use the same timestamp string as the reference LiDAR filename.
+            timestamp_ns = group.lidar_timestamps[ref_key]
+            stamp = ns_to_filename(timestamp_ns)
 
             if pose is None:
-                writer.writerow([header, "", "", "", "", "", ""])
+                writer.writerow([stamp, "", "", "", "", "", ""])
             else:
                 writer.writerow([
-                    header,
+                    stamp,
                     pose["x"],
                     pose["y"],
                     pose["z"],

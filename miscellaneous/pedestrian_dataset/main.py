@@ -1,14 +1,4 @@
-"""
-Stage 1:  BAG -> intermediate format  (timestamp matching + extraction)
-Stage 2:  intermediate -> KITTI / nuScenes / Waymo  (format conversion)
-
-Usage
-    python main.py --config config/config_eva.yaml
-    python main.py --config config/config_minerva.yaml --stage 1
-    python main.py --config config/clusters.yaml --stage 1 --from_det
-    python main.py --config config/clusters.yaml --stage 1 --from_det --cluster
-    python main.py --config config/clusters.yaml --stage 1 --from_det --cameras
-"""
+"""Detection-driven pedestrian dataset extraction."""
 
 from __future__ import annotations
 
@@ -16,426 +6,82 @@ import argparse
 import logging
 import os
 import re
-import sys
-import time
+from operator import itemgetter
 
-import numpy as np
-
-from utils.config_loader import load_config, load_cluster_config, resolve_kitti_cameras
-from bag_reader import make_parser, iter_serialized_messages, decode_message
-from timestamp_matching.matcher import match_timestamps
-from extraction.lidar_extractor import extract_lidar_frame, build_lidar_output_path
-from extraction.camera_extractor import extract_camera_frame, build_camera_output_path
-from extraction.calibration_extractor import extract_calibration, load_tf_static_from_parser
-from utils.tf_static_parser import TFStaticParser
-from utils.camera_info_parser import CameraInfoParser, load_camera_info_from_parser
-from extraction.ego_pose_extractor import load_ego_poses_from_parser, find_ego_pose_at
-from extraction.inspection_metadata_writer import write_inspection_config
-from file_writer.csv_writer import write_csv
-from file_writer.metadata_writer import write_metadata
-from file_writer.ego_pose_csv_writer import write_ego_pose_csv
+from utils.config_loader import load_cluster_config
 from utils.shared_loader import load_sample_groups
-
-os.environ['TZ'] = 'Europe/Rome'
-time.tzset()
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s - %(message)s",
+    format="%(asctime)s %(levelname)-8s %(name)s - %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _sort_bag_files(bag_dir: str, extension: str):
-    """
-    Return .mcap / .db3 files in "bag_dir" sorted by trailing numeric index.
-    See "extract_and_sort_files" from pointcloud_dataset_generation.
-    """
+def sort_bag_files(bag_dir: str, extension: str) -> list[str]:
+    """Sort numbered bag splits numerically, then list the other files alphabetically."""
     pattern = re.compile(rf".*_(\d+)\.{extension}$")
-    pairs = []
-    for fname in os.listdir(bag_dir):
-        m = pattern.search(fname)
-        if m:
-            pairs.append((fname, int(m.group(1))))
-    pairs.sort(key=lambda x: x[1])
-    return [p[0] for p in pairs]
+    numbered_files = []
+    other_files = []
+
+    for name in os.listdir(bag_dir):
+        match = pattern.search(name)
+        if match:
+            numbered_files.append((int(match.group(1)), name))
+        elif name.endswith(f".{extension}"):
+            other_files.append(name)
+
+    numbered_files.sort(key=itemgetter(0))
+    return [name for _, name in numbered_files] + sorted(other_files)
 
 
-def _detect_extension(bag_dir: str) -> str:
-    for fname in os.listdir(bag_dir):
-        if fname.endswith(".mcap"):
-            return "mcap"
-        if fname.endswith(".db3"):
-            return "db3"
-    raise ValueError(f"No .mcap or .db3 files found in: {bag_dir}")
+def bag_files(path: str) -> list[str]:
+    if os.path.isfile(path):
+        return [path]
+
+    # Prefer MCAP when a directory contains both storage formats.
+    for extension in ("mcap", "db3"):
+        names = sort_bag_files(path, extension)
+        if names:
+            return [os.path.join(path, name) for name in names]
+
+    raise ValueError(f"No .mcap or .db3 files found in: {path}")
 
 
-def _bag_stem(bag_dir: str) -> str:
-    """Use the bag folder name as the Stage-1 sub-directory name."""
-    return os.path.basename(os.path.normpath(bag_dir))
-
-
-# ---------------------------------------------------------------------------
-# Stage 1
-# ---------------------------------------------------------------------------
-
-def run_stage1(config, timestamp_groups=None) -> str:
-    """
-    Execute Stage 1: timestamp matching + sensor data extraction + calibration.
-    Returns the path to the Stage-1 output directory for this bag.
-    """
-    bag_dir = config.bag_dir
-    ext = _detect_extension(bag_dir)
-    files = _sort_bag_files(bag_dir, ext)
-
-    if not files:
-        logger.error("No bag files found in %s", bag_dir)
-        sys.exit(1)
-
-    stem = _bag_stem(bag_dir)
-    stage1_out = os.path.join(config.output_base_dir, stem)
-    tolerance_ms = config.matching.tolerance_ms
-    sampling_interval_ms = config.matching.sampling_interval_ms
-    ref_key = config.lidars[0].key  # first LiDAR listed in the settings file
-
-    logger.info(">>> STAGE 1")
-    logger.info("BAG folder  : %s  (%d files, .%s)", bag_dir, len(files), ext)
-    logger.info("Output dir  : %s", stage1_out)
-    logger.info("Tolerance   : (+-)%.1f ms", tolerance_ms)
-    logger.info("Interval    : %.1f ms", sampling_interval_ms)
-
-    ## Collect timestamps from every file for all sensors
-    all_lidar_ts = {l.key: [] for l in config.lidars}
-    all_camera_ts = {c.key: [] for c in config.cameras}
-    file_ref_ranges = {}  # {fname: (min_ref_ts, max_ref_ts)}
-    sensor_records = {}  # {topic: {header_timestamp: (fname, recording_timestamp)}}
-    if timestamp_groups is not None:
-        for sensor in config.lidars + config.cameras:
-            sensor_records[sensor.topic] = {}
-        requested_timestamps = {
-            sensor.topic: {
-                group.lidar_timestamps.get(sensor.key, group.camera_timestamps.get(sensor.key))
-                for group in timestamp_groups
-            } - {None}
-            for sensor in config.lidars + config.cameras
-        }
-
-    # Ego pose: accumulate chunks from each file
-    ego_ts_chunks: list = []
-    ego_pose_chunks: list = []
-    static_transforms = TFStaticParser() if config.urdf_path == "from_tf_static" else None
-    camera_info = CameraInfoParser(config.cameras) if config.calibration_yaml == "from_camera_info" else None
-
-    for fname in files:  #TODO: optimize the loop by only opening each file once
-        fpath = os.path.join(bag_dir, fname)
-        parser = make_parser(fpath)
-        logger.info("Reading timestamps from %s ...", fname)
-
-        if timestamp_groups is not None:
-            for topic, recording_timestamp, type_name, payload in iter_serialized_messages(parser, list(sensor_records)):
-                message = decode_message(parser, topic, type_name, payload)
-                stamp = message.header.stamp
-                timestamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
-                if timestamp_ns in requested_timestamps[topic]:
-                    sensor_records[topic].setdefault(timestamp_ns, (fname, recording_timestamp))
-                del message
-        else:
-            for lidar in config.lidars:
-                try:
-                    ts = parser.get_message_timestamps(lidar.topic)
-                except KeyError:
-                    logger.warning("LiDAR topic '%s' is absent from %s.", lidar.topic, fname)
-                    ts = []
-                all_lidar_ts[lidar.key].extend(ts)
-                # Record the time span of the reference LiDAR in this file
-                if lidar.key == ref_key and ts:
-                    file_ref_ranges[fname] = (min(ts), max(ts))
-
-            for cam in config.cameras:
-                ts = parser.get_message_timestamps(cam.topic)
-                all_camera_ts[cam.key].extend(ts)
-
-        # Load ego poses from /tf topic in this file
-        file_ego_ts, file_ego_poses = load_ego_poses_from_parser(
-            parser,
-            config.ego_pose.topic,
-            config.ego_pose.parent_frame,
-            config.ego_pose.child_frame,
-        )
-        if len(file_ego_ts) > 0:
-            ego_ts_chunks.append(file_ego_ts)
-            ego_pose_chunks.append(file_ego_poses)
-        if static_transforms is not None:
-            load_tf_static_from_parser(parser, static_transforms)
-        if camera_info is not None:
-            load_camera_info_from_parser(parser, camera_info)
-
-    # Merge ego pose chunks from all files into one sorted array
-    if ego_ts_chunks:
-        all_ego_ts = np.concatenate(ego_ts_chunks)
-        all_ego_data = np.vstack(ego_pose_chunks)
-        order = np.argsort(all_ego_ts)
-        all_ego_ts = all_ego_ts[order]
-        all_ego_data = all_ego_data[order]
-        logger.info("Total ego poses collected across all files: %d", len(all_ego_ts))
-    else:
-        all_ego_ts   = np.array([], dtype=np.int64)
-        all_ego_data = np.zeros((0, 7), dtype=np.float64)
-        logger.warning(
-            "No ego poses found in any bag file for topic '%s' "
-            "('%s' -> '%s'). ego_poses.csv will have empty numeric cells.",
-            config.ego_pose.topic,
-            config.ego_pose.parent_frame,
-            config.ego_pose.child_frame,
-        )
-
-    ## Timestamp matching
-    logger.info("Running timestamp matching ...")
-    if timestamp_groups is None:
-        groups = match_timestamps(
-            lidar_timestamps = all_lidar_ts,
-            camera_timestamps = all_camera_ts,
-            tolerance_ms = tolerance_ms,
-            sampling_interval_ms = sampling_interval_ms,
-        )
-    else:
-        groups = []
-        for group in timestamp_groups:
-            missing = [l.key for l in config.lidars if group.lidar_timestamps[l.key] not in sensor_records[l.topic]]
-            if missing:
-                logger.warning("Skipping CSV group at ts=%d: exact LiDAR frames missing for %s",
-                               group.lidar_timestamps[ref_key], missing)
-                continue
-            for cam in config.cameras:
-                ts = group.camera_timestamps[cam.key]
-                if ts is not None and ts not in sensor_records[cam.topic]:
-                    logger.warning("No exact camera %s frame at ts=%d", cam.key, ts)
-                    group.camera_timestamps[cam.key] = None
-            groups.append(group)
-    logger.info("Found %d valid sample groups.", len(groups))
-
-    if not groups:
-        logger.warning("No valid sample groups found. Check tolerance / sampling parameters.")
-        return stage1_out
-
-    ## Resolve ego pose for every matched group
-    logger.info("Resolving ego poses for %d groups ...", len(groups))
-    ego_pose_results = [
-        find_ego_pose_at(
-            ref_ts       = group.lidar_timestamps[ref_key],
-            ts_arr       = all_ego_ts,
-            pose_arr     = all_ego_data,
-            tolerance_ms = config.matching.ego_pose_tolerance_ms,
-        )
-        for group in groups
-    ]
-
-    ## Extract sensor data for each matched group
-    # Open each bag file once and extract only the groups whose reference LiDAR timestamp falls within that file's time range.
-    logger.info("Extracting sensor data ...")
-    tolerance_bound_ns = int(tolerance_ms * 1_000_000)
-
-    for fname in files:
-        if timestamp_groups is not None:
-            file_groups = groups
-        else:
-            ref_range = file_ref_ranges.get(fname)
-            if ref_range is None:
-                logger.warning("No reference timestamps found in %s, skipping.", fname)
-                continue
-
-            file_min_ts, file_max_ts = ref_range
-            lower_bound = file_min_ts - tolerance_bound_ns
-            upper_bound = file_max_ts + tolerance_bound_ns
-
-            file_groups = []
-            for g in groups:
-                timestamp = g.lidar_timestamps.get(ref_key, -1)
-                if lower_bound <= timestamp <= upper_bound:
-                    file_groups.append(g)
-
-        if not file_groups:
-            logger.info("No groups to extract from %s - skipping.", fname)
-            continue
-
-        logger.info("Extracting %d groups from %s ...", len(file_groups), fname)
-
-        fpath  = os.path.join(bag_dir, fname)
-        parser = make_parser(fpath)
-
-        for group in file_groups:
-
-            # LiDAR frames
-            for lidar in config.lidars:
-                ts = group.lidar_timestamps.get(lidar.key)
-                if ts is None:
-                    continue
-                recording_timestamp = ts
-                if timestamp_groups is not None:
-                    source_file, recording_timestamp = sensor_records[lidar.topic][ts]
-                    if source_file != fname:
-                        continue
-                out_path = build_lidar_output_path(config.output_base_dir, stem, lidar.key, ts)
-                extract_lidar_frame(parser, lidar.topic, recording_timestamp, out_path, tolerance_ms,
-                                    config.on_existing, header_timestamp_ns=ts if timestamp_groups is not None else None)
-
-            # Camera frames
-            for cam in config.cameras:
-                ts = group.camera_timestamps.get(cam.key)
-                if ts is None:
-                    continue
-                recording_timestamp = ts
-                if timestamp_groups is not None:
-                    source_file, recording_timestamp = sensor_records[cam.topic][ts]
-                    if source_file != fname:
-                        continue
-                out_path = build_camera_output_path(config.output_base_dir, stem, cam.key, ts)
-                extract_camera_frame(parser, cam.topic, recording_timestamp, out_path, tolerance_ms,
-                                     cam.compressed, config.on_existing, header_timestamp_ns=ts if timestamp_groups is not None else None)
-
-    ## Write CSV + metadata + ego poses
-    csv_path       = os.path.join(stage1_out, "timestamps.csv")
-    meta_path      = os.path.join(stage1_out, "info_extraction.yaml")
-    ego_pose_path  = os.path.join(stage1_out, "ego_poses.csv")
-
-    write_csv(groups, csv_path)
-    write_metadata(config, files, len(groups), meta_path, first_timestamp_ns=groups[0].lidar_timestamps[ref_key])
-    write_ego_pose_csv(groups, ego_pose_results, ref_key, ego_pose_path)
-
-    ## Extract and write calibration.
-    camera_frame_ids = [
-        c.frame_id for c in config.cameras
-        if any(group.camera_timestamps.get(c.key) is not None for group in groups)
-    ]
-    sensor_links = list(dict.fromkeys(
-        [l.frame_id for l in config.lidars] +
-        camera_frame_ids +
-        # The fused-LiDAR annotations (labels/lidar/) are anchored at this
-        # frame, which is physically distinct from reference_frame
-        # (ring_center) - the KITTI label converter needs its extrinsic too.
-        [config.ego_pose.child_frame]
-    ))
-
-    extract_calibration(
-        urdf_path         = config.urdf_path,
-        intrinsics_yaml_path = config.calibration_yaml,
-        stage1_out        = stage1_out,
-        reference_frame   = config.reference_frame,
-        sensor_links      = sensor_links,
-        camera_frame_ids  = camera_frame_ids,
-        tf_static         = static_transforms,
-        camera_info       = camera_info,
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Extract pedestrian data matched to 3-D detections",
     )
-
-    write_inspection_config(config, stage1_out)
-
-    logger.info("Stage 1 complete. Output: %s", stage1_out)
-    return stage1_out
+    parser.add_argument("config", help="YAML configuration file")
+    return parser.parse_args()
 
 
-# ---------------------------------------------------------------------------
-# Stage 2
-# ---------------------------------------------------------------------------
+def main() -> None:
+    args = parse_args()
+    config = load_cluster_config(args.config)
 
-def run_stage2(config, stage1_dir: str) -> None:
-    """
-    Execute Stage 2: convert the Stage-1 intermediate data to each requested output format.
-    """
-    from converters import get_converter
-
-    logger.info(">>> STAGE 2")
-
-    for fmt in config.output_formats:
-        out_dir = os.path.join(config.output_base_dir, os.path.basename(stage1_dir) + f"_{fmt}")
-        converter = get_converter(fmt, config, stage1_dir, out_dir)
-        logger.info("Converting to %s -> %s", fmt.upper(), out_dir)
-        converter.convert()
-
-    logger.info("Stage 2 complete.")
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-def _parse_args():
-    parser = argparse.ArgumentParser(description="bag_to_fusion_dataset: BAG -> KITTI / nuScenes / Waymo")
-    parser.add_argument("--config", required=True, help="Path to the YAML config file")
-    parser.add_argument(
-        "--from_det", action="store_true",
-        help="Run Stage 1 from 3-D detections using the detection extraction config",
-    )
-    parser.add_argument(
-        "--cluster", action="store_true",
-        help="With --from_det: save selected detection clusters instead of full LiDAR clouds",
-    )
-    parser.add_argument("--stage", type=int, choices=[1, 2, 12], default=12, help="Which stage(s) to run: 1, 2, or 12 (both). Default: 12")
-    parser.add_argument(
-        "--timestamps-csv", help="Stage-1 CSV listing exact LiDAR and camera header timestamps; bypasses subsampling",
-    )
-    parser.add_argument(
-        "--cameras", nargs="*", default=None, metavar="CAMERA_KEY",
-        help="With --from_det: export matched cameras (all configured cameras if no keys are supplied). "
-             "For KITTI: select cameras by key in interleaving order, overriding kitti.cameras "
-             "(e.g. --cameras camera_0 camera_2).",
-    )
-    args = parser.parse_args()
-    if args.cluster and not args.from_det:
-        parser.error("--cluster requires --from_det")
-    if args.from_det and args.stage == 2:
-        parser.error("--from_det is a Stage-1 option; use --stage 1 or omit --stage")
-    if args.timestamps_csv and args.stage == 2:
-        parser.error("--timestamps-csv is a Stage-1 option")
-    return args
-
-
-def main():
-    args   = _parse_args()
-    if args.from_det:
-        from extraction.cluster_extractor import run_detection_extraction
-
-        config = load_cluster_config(args.config, include_cameras=args.cameras is not None)
-        if args.cameras is not None:
-            config.cameras = resolve_kitti_cameras(config.cameras, args.cameras)
+    # A CSV requests exact sensor timestamps, even when it contains zero rows.
+    timestamp_groups = None
+    if config.timestamps_csv:
+        camera_keys = [camera.key for camera in config.cameras]
         timestamp_groups = load_sample_groups(
-            os.path.expanduser(args.timestamps_csv), [config.lidar_key], [cam.key for cam in config.cameras],
-        ) if args.timestamps_csv else None
-        if os.path.isfile(config.bag_dir):
-            files = [config.bag_dir]
-        else:
-            ext = _detect_extension(config.bag_dir)
-            names = _sort_bag_files(config.bag_dir, ext)
-            # Also accept filenames without a numeric split suffix.
-            names += sorted(
-                name for name in os.listdir(config.bag_dir)
-                if name.endswith(f".{ext}") and name not in names
-            )
-            files = [os.path.join(config.bag_dir, name) for name in names]
-        run_detection_extraction(config, files, cluster=args.cluster, timestamp_groups=timestamp_groups)
-        return
+            config.timestamps_csv,
+            [config.lidar_key],
+            camera_keys,
+        )
+    if config.reuse_dataset and not timestamp_groups:
+        raise ValueError("Reuse workflow needs a non-empty timestamps CSV")
 
-    config = load_config(args.config)
+    # Keep CLI help and configuration errors available without the ROS bag libraries.
+    from extraction.cluster_extractor import run_detection_extraction
 
-    config.kitti_selected_cameras = resolve_kitti_cameras(
-        config.cameras, args.cameras or config.kitti_camera_selection
+    files = bag_files(config.bag_dir)
+    run_detection_extraction(
+        config,
+        files,
+        cluster=config.cluster,
+        timestamp_groups=timestamp_groups,
     )
-
-    stage1_dir = os.path.join(config.output_base_dir, _bag_stem(config.bag_dir))
-
-    if args.stage in (1, 12):
-        timestamp_groups = load_sample_groups(
-            os.path.expanduser(args.timestamps_csv), [lidar.key for lidar in config.lidars],
-            [cam.key for cam in config.cameras],
-        ) if args.timestamps_csv else None
-        stage1_dir = run_stage1(config, timestamp_groups=timestamp_groups)
-
-    if args.stage in (2, 12):
-        run_stage2(config, stage1_dir)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+from operator import attrgetter
 
 import numpy as np
 from sensor_msgs.msg import PointField
@@ -113,21 +114,27 @@ def build_lidar_output_path(
 
 def read_cloud_points(cloud_msg) -> np.ndarray:
     """View all PointCloud2 fields, respecting offsets, row padding and byte order."""
-    fields = sorted(cloud_msg.fields, key=lambda f: f.offset)
+    fields = sorted(cloud_msg.fields, key=attrgetter("offset"))
     byte_order = ">" if cloud_msg.is_bigendian else "<"
     formats = []
     for field in fields:
-        np_type, _, _ = _PF_TO_NP[field.datatype]
-        dtype = np.dtype(byte_order + np_type)
-        formats.append((dtype, (field.count,)) if field.count > 1 else dtype)
+        numpy_type, _, _ = _PF_TO_NP[field.datatype]
+        dtype = np.dtype(byte_order + numpy_type)
+        if field.count > 1:
+            formats.append((dtype, (field.count,)))
+        else:
+            formats.append(dtype)
+
+    # Preserve the message layout so organized clouds with padded rows read correctly.
     dtype = np.dtype({
-        "names": [f.name for f in fields],
+        "names": [field.name for field in fields],
         "formats": formats,
-        "offsets": [f.offset for f in fields],
+        "offsets": [field.offset for field in fields],
         "itemsize": cloud_msg.point_step,
     })
     return np.ndarray(
-        shape=(cloud_msg.height, cloud_msg.width), dtype=dtype,
+        shape=(cloud_msg.height, cloud_msg.width),
+        dtype=dtype,
         buffer=bytes(cloud_msg.data),
         strides=(cloud_msg.row_step, cloud_msg.point_step),
     ).reshape(-1)
@@ -141,54 +148,45 @@ def _write_pcd(cloud_msg, out_path: str, point_indices=None) -> None:
     If point_indices is provided, write only that subset (indices or boolean mask).
     The result is a valid PCD v0.7 binary file, in little-endian byte order.
     """
-    fields = sorted(cloud_msg.fields, key=lambda f: f.offset)
-    arr = read_cloud_points(cloud_msg)
+    fields = sorted(cloud_msg.fields, key=attrgetter("offset"))
+    points = read_cloud_points(cloud_msg)
     if point_indices is not None:
-        arr = arr[point_indices]
-    num_points = len(arr)
+        points = points[point_indices]
+    num_points = len(points)
 
     if num_points == 0:
         logger.warning("Empty point cloud - writing zero-point PCD: %s", out_path)
 
-    # ------------------------------------------------------------------ #
-    # Pack only the real fields (no padding) into a tight array
-    # ------------------------------------------------------------------ #
-    real_dtype_list = []
-    for field in fields:
-        np_type, _, _ = _PF_TO_NP[field.datatype]
-        np_type = "<" + np_type
-        if field.count > 1:
-            real_dtype_list.append((field.name, np_type, field.count))
-        else:
-            real_dtype_list.append((field.name, np_type))
-
-    packed = np.zeros(num_points, dtype=np.dtype(real_dtype_list))
-    for field in fields:
-        packed[field.name] = arr[field.name]
-
-    binary_data = packed.tobytes()
-
-    # ------------------------------------------------------------------ #
-    # Assemble and write the PCD header + binary payload
-    # ------------------------------------------------------------------ #
-    field_names  = []
-    field_sizes  = []
-    field_types  = []
+    # Build the packed layout and PCD header fields in the same order.
+    packed_fields = []
+    field_names = []
+    field_sizes = []
+    field_types = []
     field_counts = []
     for field in fields:
-        _, byte_size, pcd_type = _PF_TO_NP[field.datatype]
+        numpy_type, byte_size, pcd_type = _PF_TO_NP[field.datatype]
+        little_endian_type = "<" + numpy_type
+        if field.count > 1:
+            packed_fields.append((field.name, little_endian_type, field.count))
+        else:
+            packed_fields.append((field.name, little_endian_type))
         field_names.append(field.name)
         field_sizes.append(str(byte_size))
         field_types.append(pcd_type)
         field_counts.append(str(field.count))
 
+    # Copy field values into contiguous little-endian storage without padding.
+    packed = np.zeros(num_points, dtype=np.dtype(packed_fields))
+    for name in field_names:
+        packed[name] = points[name]
+
     header_lines = [
         "# .PCD v0.7 - Point Cloud Data file format",
         "VERSION 0.7",
-        "FIELDS "    + " ".join(field_names),
-        "SIZE "      + " ".join(field_sizes),
-        "TYPE "      + " ".join(field_types),
-        "COUNT "     + " ".join(field_counts),
+        "FIELDS " + " ".join(field_names),
+        "SIZE " + " ".join(field_sizes),
+        "TYPE " + " ".join(field_types),
+        "COUNT " + " ".join(field_counts),
         f"WIDTH {num_points}",
         "HEIGHT 1",
         "VIEWPOINT 0 0 0 1 0 0 0",
@@ -199,7 +197,7 @@ def _write_pcd(cloud_msg, out_path: str, point_indices=None) -> None:
 
     with open(out_path, "wb") as fh:
         fh.write(header_bytes)
-        fh.write(binary_data)
+        fh.write(packed.tobytes())
 
     logger.debug(
         "PCD written: %s  (%d pts, fields: %s)",

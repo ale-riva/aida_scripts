@@ -8,7 +8,6 @@ point data as a NumPy structured array, preserving all fields (x, y, z, intensit
 from __future__ import annotations
 
 import numpy as np
-import open3d as o3d
 from typing import List
 
 import logging
@@ -164,35 +163,6 @@ def to_kitti_bin(points: np.ndarray) -> np.ndarray:
     return out
 
 
-def to_nuscenes_bin(points: np.ndarray) -> np.ndarray:
-    """
-    Convert a structured point array (from read_pcd) to the nuScenes binary format:
-    Nx5 float32 array with columns [x, y, z, intensity, ring].
-
-    Intensity is normalised to [0, 1] using the same logic as to_kitti_bin.
-
-    ring is read from the 'ring' field of the PCD structured array. The column
-    is filled with zeros if the field is not present (unstructured cloud).
-    """
-    n   = len(points)
-    out = np.zeros((n, 5), dtype=np.float32)
-
-    for src, dst in (("x", 0), ("y", 1), ("z", 2)):
-        if src in points.dtype.names:
-            out[:, dst] = points[src].astype(np.float32)
-
-    if "intensity" in points.dtype.names:
-        intensity = points["intensity"].astype(np.float32)
-        max_val   = float(intensity.max())
-        if max_val > 1.0:
-            intensity = intensity / max_val
-        out[:, 3] = intensity
-
-    if "ring" in points.dtype.names:
-        out[:, 4] = points["ring"].astype(np.float32)
-
-    return out
-
 def to_xyz_bin(points: np.ndarray) -> np.ndarray:
     """
     Convert a structured point array (from read_pcd) to an XYZ-only format:
@@ -208,33 +178,6 @@ def to_xyz_bin(points: np.ndarray) -> np.ndarray:
             out[:, dst] = points[src].astype(np.float32)
 
     return out
-
-def get_num_points_in_bbox(pcl_path: str, center: List[float], extent: List[float], rpy:List[float], n_fields_per_point:int):
-
-    # Check file extension and load accordingly
-    if isinstance(pcl_path, str):
-        if pcl_path.endswith('.bin'):
-            xyzi = np.fromfile(pcl_path, dtype=np.float32).reshape(-1,n_fields_per_point)
-            pcd_cloud = o3d.geometry.PointCloud()
-            pcd_cloud.points = o3d.utility.Vector3dVector(xyzi[:, :3])
-        elif pcl_path.endswith('.pcd'):
-            pcd_cloud = o3d.io.read_point_cloud(pcl_path)
-        else:
-            raise ValueError(f"Unsupported file format: {pcl_path}. Must be .bin or .pcd")
-    else:
-        # Assume it's already a PointCloud object
-        pcd_cloud = pcl_path
-
-    R = o3d.geometry.get_rotation_matrix_from_xyz(np.array(rpy))
-    obb = o3d.geometry.OrientedBoundingBox(np.array(center), R, np.array(extent))
-    
-    # Get indices of points inside the bounding box
-    indices = obb.get_point_indices_within_bounding_box(pcd_cloud.points)
-    
-    # Count points inside
-    num_points = len(indices)
-
-    return num_points
 
 def merge_and_transform(row: dict, lidar_keys: List[str], stage1_dir: str, extrinsics: dict,
                         point_reader:function) -> np.ndarray:

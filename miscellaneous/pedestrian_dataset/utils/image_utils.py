@@ -1,7 +1,7 @@
 """
 Shared camera undistortion utilities.
 
-Used by both converters/kitti_converter.py and converters/nuscenes_converter.py
+Shared camera image and projection utilities.
 so that the undistortion logic and the K_new computation always stay in sync.
 
 Two camera models are supported, matching the intrinsics dict written by

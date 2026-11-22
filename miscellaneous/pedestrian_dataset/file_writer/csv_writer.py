@@ -30,9 +30,10 @@ def write_csv(groups: List[SampleGroup], out_path: str) -> None:
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    lidar_cols  = list(groups[0].lidar_timestamps)
-    camera_cols = sorted(groups[0].camera_timestamps.keys())
-    header = lidar_cols + camera_cols
+    # The first group defines the sensor columns for every row.
+    lidar_columns = list(groups[0].lidar_timestamps)
+    camera_columns = sorted(groups[0].camera_timestamps)
+    header = lidar_columns + camera_columns
 
     with open(out_path, "w", newline="") as fh:
         writer = csv.writer(fh)
@@ -41,13 +42,13 @@ def write_csv(groups: List[SampleGroup], out_path: str) -> None:
         for group in groups:
             row = []
 
-            for col in lidar_cols:
-                ts = group.lidar_timestamps.get(col)
-                row.append(ns_to_filename(ts) if ts is not None else "")
+            for column in lidar_columns:
+                timestamp_ns = group.lidar_timestamps.get(column)
+                row.append(ns_to_filename(timestamp_ns) if timestamp_ns is not None else "")
 
-            for col in camera_cols:
-                ts = group.camera_timestamps.get(col)
-                row.append(ns_to_filename(ts) if ts is not None else "")
+            for column in camera_columns:
+                timestamp_ns = group.camera_timestamps.get(column)
+                row.append(ns_to_filename(timestamp_ns) if timestamp_ns is not None else "")
 
             writer.writerow(row)
 

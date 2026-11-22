@@ -28,6 +28,12 @@ _NS_PER_SEC = 1_000_000_000
 _TS_RE = re.compile(r"^(\d{8})_(\d{6})_(\d{9})$")
 
 
+def message_timestamp_ns(message) -> int:
+    """Convert a ROS message's header stamp to integer nanoseconds."""
+    stamp = message.header.stamp
+    return int(stamp.sec) * _NS_PER_SEC + int(stamp.nanosec)
+
+
 def ns_to_filename(timestamp_ns: int) -> str:
     """
     Convert a ROS 2 nanosecond timestamp to the canonical filename string.

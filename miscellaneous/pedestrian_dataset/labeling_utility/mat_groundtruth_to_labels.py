@@ -24,7 +24,7 @@ Conventions applied in this conversion
 3. Frames with no detection still produce a JSON file, containing a single
    annotation entry with position/width/height all zeroed (matching the
    "empty-scene" convention already recognised by
-   kitti_label_converter._build_2d_box_from_camera_ann, which treats a
+   the annotation reader, which treats a
    width=0/height=0 box as "no object" and skips it downstream).
 
 Usage

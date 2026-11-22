@@ -89,10 +89,14 @@ def write_camera_frame(img_msg, out_path: str, compressed: bool = True, on_exist
         if on_existing == "skip":
             logger.debug("Skipping existing file: %s", out_path)
             return False
-        elif on_existing == "abort":
+        if on_existing == "abort":
             raise FileExistsError(f"Output file already exists: {out_path}")
 
-    cv_image = _decode_compressed(img_msg) if compressed else _decode_raw(img_msg)
+    # The configured transport determines how to interpret the camera payload.
+    if compressed:
+        cv_image = _decode_compressed(img_msg)
+    else:
+        cv_image = _decode_raw(img_msg)
 
     if cv_image is None:
         logger.warning("Failed to decode image for %s", out_path)

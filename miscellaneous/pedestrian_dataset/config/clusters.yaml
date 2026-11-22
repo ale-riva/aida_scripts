@@ -1,14 +1,16 @@
-# Detection-driven Stage 1: python main.py --config config/clusters.yaml --stage 1 --from_det
-# Add --cluster to export selected-class clusters instead of full clouds.
-# Add --cameras to export time-matched images from the cameras in vehicle.settings.
+# Settings for detection-matched pedestrian dataset extraction.
 input:
   bag_dir: "/mnt/storage/AIDA/bags/2026-10-19/2026-10-19_16-24-06_normal"  # bag folder or a single .mcap / .db3 file
   lidar_key: "lidar_center"  # entry in the settings file's lidars section TODO: remove
   detection_topic: "/perception/multimodal_3d_detections"
-  # Camera intrinsics for --cameras: CameraInfo topics or a YAML file path.
+  # Camera intrinsics when cameras are enabled: CameraInfo topics or a YAML file path.
   calibration_yaml: "from_camera_info"
   # calibration_yaml: "~/polimove_code/polimove_dev/src/common/config/param/camera_calibrations/camera_calibrations_eva.param.yaml"
-  urdf_path: "from_tf_static"  # or a URDF file path; omitted defaults to /tf_static
+  urdf_path: "from_tf_static"  # or a URDF file path
+
+  reuse_dataset:
+  timestamps_csv: "/mnt/storage/AIDA/bags/niguarda/2026-11-17/2026-11-17_21-52-16_normal/pedestrian_dataset_wcam/timestamps.csv"  # optional exact frame list
+    samples: "/mnt/storage/AIDA/bags/niguarda/2026-11-17/2026-11-17_21-52-16_normal/pedestrian_dataset_wcam"  # prior export root containing samples/ and calibration.yaml
 
 vehicle:
   settings: "settings_serravalle_niguarda.yaml"  # relative to this config file
@@ -17,6 +19,9 @@ output:
   target_classes: [0]  # meas_class IDs; omit/null for all classes, [-1] for all
   base_dir: "/mnt/storage/AIDA/bags/2026-10-19/2026-10-19_16-24-06_normal/pedestrian_dataset_wcam"  # direct root for samples/ or clusters/, labels/ and CSV files
   on_existing: "skip"  # skip | overwrite | abort
+cluster: false  # save cropped detection clusters instead of full clouds
+  cameras: false  # true for all cameras, or list keys such as [camera_0, camera_2]
+  copy_samples: false  # reused samples are symlinked unless true
 
 matching:
   sampling_ms:  1.0
