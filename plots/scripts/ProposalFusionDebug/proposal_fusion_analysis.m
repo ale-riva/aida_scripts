@@ -104,6 +104,7 @@ VIS_CLASSES = [0,6];
 
 % lid_detection loading
 [multimod_det, lid_det] = load_perception(log);
+cam_det = load_camera_detections(log, VIS_CAM);
 multimod_det = get_det_map_coords(multimod_det,ego,tree);
 % lid_det = update_struct(lid_det, pt_count, true);
 
