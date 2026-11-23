@@ -11,7 +11,7 @@ VEHICLE = "serravalle_niguarda";
 %% Paths
 normal_path = "/home/alessandro/hurbie_storage/";
 scriptDir = fileparts(mfilename('fullpath'));
-addpath(fullfile(scriptDir,'func'));
+addpath(fullfile(scriptDir, '..', 'shared', 'func'));
 addpath(fullfile(scriptDir,'figs'));
 graphics_options;
 
