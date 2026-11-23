@@ -26,6 +26,9 @@ class_names = fieldnames(DET_LABELS);
 
 % --- Target tracking ---
 for i = 1:numel(runs)
+    if ~isfield(runs{i}, 'tt')
+        continue;
+    end
     tt = runs{i}.tt;
     valid = ...
         isfinite(tt.stamp) & ...
@@ -115,6 +118,9 @@ class_names = fieldnames(DET_LABELS);
 L = 0.1;
 % target tracking
 for i = 1:numel(runs)
+    if ~isfield(runs{i}, 'tt')
+        continue;
+    end
     tt = runs{i}.tt;
     valid = ...
         isfinite(tt.stamp) & ...
