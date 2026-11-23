@@ -11,14 +11,14 @@ for i = 1:numel(camera_names)
     [frame_matched, det_frame] = ismember(debug.lidar_stamp(:), det.stamp(:));
     frame_matched = frame_matched & isfinite(debug.lidar_stamp(:));
 
-    valid = (1:size(debug.lid_box_id, 2)) <= debug.count(:);
+    valid = (1:size(debug.fused_box_id, 2)) <= debug.count(:);
     camera_only = valid & debug.has_camera_box == 1 & debug.has_lid_box == 0;
     keep = camera_only;
     for frame = find(frame_matched).'
         ids = det.id(det_frame(frame), :);
+        fused_ids = debug.fused_box_id(frame, :);
         keep(frame, :) = keep(frame, :) | (valid(frame, :) & ...
-            debug.has_lid_box(frame, :) == 1 & ...
-            ismember(debug.lid_box_id(frame, :), ids(isfinite(ids))));
+            fused_ids >= 0 & ismember(fused_ids, ids(isfinite(ids))));
     end
 
     frames = frame_matched | any(camera_only, 2);
@@ -42,7 +42,7 @@ cols = cumsum(keep, 2);
 destination = row + (cols(keep) - 1) * shape(1);
 
 fields = {'has_camera_box', 'camera_considered', 'camera_box_id', ...
-    'camera_index', 'has_lid_box', 'lid_box_id', 'lid_index'};
+    'camera_index', 'has_lid_box', 'lid_box_id', 'fused_box_id', 'lid_index'};
 for i = 1:numel(fields)
     field = fields{i};
     out.(field) = compactField(debug.(field), frames, keep, destination, shape);

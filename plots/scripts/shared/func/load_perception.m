@@ -1,4 +1,4 @@
-function [lid_det] = load_perception(log)
+function [multimod_det, lid_det] = load_perception(log)
 % LOAD_PERCEPTION  Parse perception detections.
 %
 %   Converts variable-length detection cell arrays into NaN-padded
@@ -57,9 +57,64 @@ sens_stamp_field = 'stamp';
 
 % Initialise output
 
-lid_det = emptyDetectionStruct;
+multimod_det = emptyDetectionStruct;
 
 if isfield(log, topic)
+
+    d = log.(topic);
+
+    % Number of messages and detections
+    n_msg = numel(d.(sens_stamp_field));
+
+    multimod_det.count = double(d.count(:));
+    multimod_det.max_det = max([1; multimod_det.count]);
+
+    n_det = multimod_det.max_det;
+
+    multimod_det.stamp = d.(sens_stamp_field)(:);
+    multimod_det.frame_id_rel = d.frame_id{1,1};
+    multimod_det.frame_id_map = " ";
+
+    multimod_det.id = unpackField(d, 'meas_array__box_id', multimod_det.count, n_msg, n_det);
+    multimod_det.x_cog = unpackField(d, 'meas_array__x_cog', multimod_det.count, n_msg, n_det);
+    multimod_det.y_cog = unpackField(d, 'meas_array__y_cog', multimod_det.count, n_msg, n_det);
+    multimod_det.range = hypot(multimod_det.x_cog, multimod_det.y_cog);
+    multimod_det.z_cog = unpackField(d, 'meas_array__z_cog', multimod_det.count, n_msg, n_det);
+    multimod_det.orientation = rad2deg(unpackField(d, 'meas_array__orientation', multimod_det.count, n_msg, n_det));
+    multimod_det.height = unpackField(d, 'meas_array__height', multimod_det.count, n_msg, n_det);
+    multimod_det.length = unpackField(d, 'meas_array__length', multimod_det.count, n_msg, n_det);
+    multimod_det.width = unpackField(d, 'meas_array__width', multimod_det.count, n_msg, n_det);
+    multimod_det.score = unpackField(d, 'meas_array__score', multimod_det.count, n_msg, n_det);
+    multimod_det.class = unpackField(d, 'meas_array__meas_class', multimod_det.count, n_msg, n_det);
+    multimod_det.meas_class = multimod_det.class;
+    multimod_det.sensor_type = unpackField(d, 'meas_array__sensor_type', multimod_det.count, n_msg, n_det);
+    multimod_det.smallest_box = unpackField(d, 'meas_array__smallest_box', multimod_det.count, n_msg, n_det);
+
+    multimod_det.bbox.height = unpackField(d, 'meas_array__bbox__height', multimod_det.count, n_msg, n_det);
+    multimod_det.bbox.width = unpackField(d, 'meas_array__bbox__width', multimod_det.count, n_msg, n_det);
+    multimod_det.bbox.lr_corner_x = unpackField(d, 'meas_array__bbox__lower_right_corner_x',multimod_det.count, n_msg, n_det);
+    multimod_det.bbox.lr_corner_y = unpackField(d, 'meas_array__bbox__lower_right_corner_y', multimod_det.count, n_msg, n_det);
+    multimod_det.bbox.ul_corner_x = unpackField(d, 'meas_array__bbox__upper_left_corner_x', multimod_det.count, n_msg, n_det);
+    multimod_det.bbox.ul_corner_y = unpackField(d, 'meas_array__bbox__upper_left_corner_y', multimod_det.count, n_msg, n_det);
+
+    % initialize empty
+    multimod_det.x_map = NaN(n_msg, n_det);
+    multimod_det.y_map = NaN(n_msg, n_det);
+    multimod_det.orientation_map = NaN(n_msg, n_det);
+    multimod_det.pt_count = NaN(n_msg, n_det);
+end
+
+
+% LiDAR detections
+
+topic = 'perception_lidar__3d_detections';
+if ~isfield(log, topic)
+    topic = 'perception__lidar_3d_detections';
+end
+
+lid_det = emptyDetectionStruct;
+
+if nargout > 1 && isfield(log, topic)
 
     d = log.(topic);
 

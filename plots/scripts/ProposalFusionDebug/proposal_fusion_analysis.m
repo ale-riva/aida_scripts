@@ -83,6 +83,12 @@ end
 
 %% Parsing
 
+% timestamps
+timestamp_fields = cellstr("camera_" + cam_idx);
+if ismember('lidar_center', T_timestamps.Properties.VariableNames)
+    timestamp_fields{end+1} = 'lidar_center';
+end
+timestamps = parse_table(T_timestamps, timestamp_fields);
 
 % URDF Parser loading
 urdf_file = fullfile(scriptDir, '..', '..', 'consts', 'vehicle_info', VEHICLE, 'vehicle_setup.urdf.xacro');
@@ -96,29 +102,29 @@ ego = load_vehicle_state(log);
 
 VIS_CLASSES = [0,6];
 
-% Detection loading
-det = load_perception(log);
-det = get_det_map_coords(det,ego,tree);
-% det = update_struct(det, pt_count, true);
+% lid_detection loading
+[multimod_det, lid_det] = load_perception(log);
+multimod_det = get_det_map_coords(multimod_det,ego,tree);
+% lid_det = update_struct(lid_det, pt_count, true);
 
 if (use_manual_annotation)
     annot = struct('stamp', double(T_annot{:, 1}), 'class', T_annot{:, 2:end});
-    % Match timestamps and corresponding class columns (M_annot <= M_lid_det).
-    det = update_struct(det, annot, keep_only_annotated_frames);
+    % Match timestamps and corresponding class columns (M_annot <= M_lid_lid_det).
+    multimod_det = update_struct(multimod_det, annot, keep_only_annotated_frames);
 end
+
+% Extract selected classes
+multimod_det = filter_det_by_class(multimod_det, VIS_CLASSES);
 
 % proposal fusion debug 
 prop_debug = struct();
 for i=1:numel(cam_names)
     prop_debug.(cam_names{i}) = load_proposal_debug(log, cam_names{i});
 end
+prop_debug = filter_proposal_debug(prop_debug, multimod_det);
 
-% timestamps
-timestamp_fields = cellstr("camera_" + cam_idx);
-if ismember('lidar_center', T_timestamps.Properties.VariableNames)
-    timestamp_fields{end+1} = 'lidar_center';
-end
-timestamps = parse_table(T_timestamps, timestamp_fields);
+
+
 
 
 %% PLOTTING
