@@ -131,8 +131,10 @@ ego = load_vehicle_state(log);
 if compare; ego2 = load_vehicle_state(log2); end
 
 % point count
-pt_count = parse_table(T_counts,'pt_count');
-if compare; pt_count2 = parse_table(T_counts2,'pt_count'); end
+pt_count = struct('stamp', double(T_counts{:, 1}), 'pt_count', T_counts{:, 2:end});
+if compare
+    pt_count2 = struct('stamp', double(T_counts2{:, 1}), 'pt_count', T_counts2{:, 2:end});
+end
 
 VIS_CLASSES = [0,6];
 
@@ -148,12 +150,12 @@ if compare
 end
 
 if (use_manual_annotation)
-    annot = parse_table(T_annot,'class');
+    annot = struct('stamp', double(T_annot{:, 1}), 'class', T_annot{:, 2:end});
     % Match timestamps and corresponding class columns (M_annot <= M_lid_det).
     lid_det = update_struct(lid_det, annot, keep_only_annotated_frames);
 
     if compare
-        annot2 = parse_table(T_annot2, 'class');
+        annot2 = struct('stamp', double(T_annot2{:, 1}), 'class', T_annot2{:, 2:end});
         lid_det2 = update_struct(lid_det2, annot2, keep_only_annotated_frames);
     end
 end

@@ -1,7 +1,8 @@
-function [labels] = parse_table(T, field_name)
-    % CSV class columns must be in the same order as lid_det.class columns.
-    % Detection identity is given by column position, without an id field.
+function [labels] = parse_table(T, field_names)
+    % Copy the requested table columns into same-named struct fields.
     labels = struct();
-    labels.stamp = double(T{:, 1});        % Nx1 double (s)
-    labels.(field_name) = T{:, 2:end};    % NxM double (NaN for missing detections)
+    for i = 1:numel(field_names)
+        field_name = field_names{i};
+        labels.(field_name) = T.(field_name);
+    end
 end
