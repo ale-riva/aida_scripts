@@ -139,9 +139,9 @@ end
 VIS_CLASSES = [0,6];
 
 % Detection loading
-lid_det = load_perception(log);
-lid_det = get_det_map_coords(lid_det,ego,tree);
-lid_det = update_struct(lid_det, pt_count, true);
+[multimod_det, lid_det] = load_perception(log);
+multimod_det = get_det_map_coords(multimod_det,ego,tree);
+multimod_det = update_struct(multimod_det, pt_count, true);
 
 if compare
     lid_det2 = load_perception(log2);
@@ -152,7 +152,7 @@ end
 if (use_manual_annotation)
     annot = struct('stamp', double(T_annot{:, 1}), 'class', T_annot{:, 2:end});
     % Match timestamps and corresponding class columns (M_annot <= M_lid_det).
-    lid_det = update_struct(lid_det, annot, keep_only_annotated_frames);
+    multimod_det = update_struct(multimod_det, annot, keep_only_annotated_frames);
 
     if compare
         annot2 = struct('stamp', double(T_annot2{:, 1}), 'class', T_annot2{:, 2:end});
@@ -161,9 +161,9 @@ if (use_manual_annotation)
 end
 
 % Extract selected classes
-ped_det = filter_det_by_class(lid_det, VIS_CLASSES);
+ped_det = filter_det_by_class(multimod_det, VIS_CLASSES);
 ped_det = build_3d_bbox(ped_det);
-ped_det.frame_id_rel = lid_det.frame_id_rel;
+ped_det.frame_id_rel = multimod_det.frame_id_rel;
 
 if compare
     ped_det2 = filter_det_by_class(lid_det2, VIS_CLASSES);
