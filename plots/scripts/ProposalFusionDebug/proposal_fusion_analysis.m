@@ -21,6 +21,40 @@ addpath(fullfile(scriptDir, '..', 'shared', 'func'));
 addpath(fullfile(scriptDir, 'func'));
 addpath(fullfile(scriptDir, 'figs'));
 
+%%
+graphics_options;
+col.det.PEDESTRIAN   = colors.blue{2};
+col.det.CAR          = colors.green{2};
+col.det.TRUCK        = colors.red{2};
+col.det.BUS          = colors.purple{2};
+col.det.BICYCLE      = colors.yellow{2};
+col.det.MOTORCYCLE   = colors.orange{2};
+col.det.FP_PED       = colors.red{2};
+
+col.det2.PEDESTRIAN   = colors.blue{1};
+col.det2.CAR          = colors.green{1};
+col.det2.TRUCK        = colors.red{1};
+col.det2.BUS          = colors.purple{1};
+col.det2.BICYCLE      = colors.yellow{1};
+col.det2.MOTORCYCLE   = colors.orange{1};
+col.det2.FP_PED       = colors.red{1};
+
+
+
+col.tt.PEDESTRIAN   = [1 0 1];
+col.tt.CAR          = colors.green{3};
+col.tt.TRUCK        = colors.red{3};
+col.tt.BUS          = colors.purple{3};
+col.tt.BICYCLE      = colors.yellow{3};
+col.tt.MOTORCYCLE   = colors.orange{3};
+
+load_detection_labels;
+
+sz=3; % Marker size
+f=1;
+c = 0;
+x_lim = [0 inf];
+
 %% Load Data
 
 cam_data = feval(VEHICLE + "_camera_indices");
@@ -122,12 +156,17 @@ prop_debug = struct();
 for i=1:numel(cam_names)
     prop_debug.(cam_names{i}) = load_proposal_debug(log, cam_names{i});
 end
-prop_debug = filter_proposal_debug(prop_debug, multimod_det);
+[matched_det, unmatched_det] = get_match_split(prop_debug, multimod_det);
 
 
+%%
+runs = {
+    struct('s', matched_det, 'name', 'matched', 'ego', ego, 'col', col.det),...
+    struct('s', unmatched_det, 'name', 'UNmatched', 'ego', ego, 'col', col.det2),...
+};
 
 
 
 %% PLOTTING
-
-visualize_bbox;
+map;
+% visualize_bbox;
