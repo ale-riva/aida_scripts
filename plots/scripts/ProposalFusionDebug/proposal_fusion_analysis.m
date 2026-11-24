@@ -150,6 +150,17 @@ end
 multimod_det = filter_det_by_class(multimod_det, VIS_CLASSES);
 cam_det = filter_cam_det_by_class(cam_det, VIS_CLASSES);
 
+% Filter Detections
+filters = {
+    'x_cog','>=0.0';
+    % 'range','<=35';
+    % 'score','>0.4';
+    };
+
+for i=1:size(filters,1)
+    multimod_det = filter_struct(multimod_det,filters{i,1},filters{i,2});
+end
+
 % proposal fusion debug 
 prop_debug = struct();
 for i=1:numel(cam_names)
@@ -184,4 +195,7 @@ bbox_vis = {
 
 %% PLOTTING
 map;
-% visualize_bbox;
+confidence;
+distance_confidence;
+distance_histogram;
+visualize_bbox;
