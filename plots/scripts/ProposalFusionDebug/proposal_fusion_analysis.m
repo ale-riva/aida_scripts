@@ -2,12 +2,13 @@ close all;
 clearvars -except log images_dir images_cam_names T_annot T_timestamps
 
 
+use_manual_annotation               = true;
+keep_only_annotated_frames          = true;
+
 VIS_CAM = ["left","front","right"];
 MATCHED = true;
 LID_UNMATCHED = false;
 CAM_UNMATCHED = false;
-use_manual_annotation               = true;
-keep_only_annotated_frames          = true;
 
 VEHICLE = "serravalle_niguarda";
 
@@ -156,7 +157,8 @@ prop_debug = struct();
 for i=1:numel(cam_names)
     prop_debug.(cam_names{i}) = load_proposal_debug(log, cam_names{i});
 end
-[matched_det, unmatched_det] = get_match_split(prop_debug, multimod_det);
+[matched_det, unmatched_det,...
+    dbg_matched, dbg_unmatched, dbg_cam_only] = get_match_split(prop_debug, multimod_det);
 
 
 %%

@@ -1,5 +1,3 @@
-selected_boxes = prepare_proposal_bboxes(prop_debug, MATCHED, LID_UNMATCHED, CAM_UNMATCHED);
-
 % Prepare the shared CSV timeline and per-camera debug lookups.
 camera_fields = "camera_" + cam_idx;
 n_frames = numel(timestamps.(camera_fields(1)));
@@ -14,7 +12,7 @@ end
 
 debug_frames = zeros(n_frames, numel(cam_names));
 for i = 1:numel(cam_names)
-    debug_frames(:, i) = matchDebugFrames(lidar_stamp, selected_boxes.(cam_names(i)).lidar_stamp);
+    debug_frames(:, i) = matchDebugFrames(lidar_stamp, dbg_matched.(cam_names(i)).lidar_stamp);
 end
 
 % Create the camera tiles.
@@ -32,13 +30,19 @@ fig.UserData = struct( ...
     'camera_fields', camera_fields, ...
     'images_dir', images_dir, ...
     'timestamps', timestamps, ...
-    'selected_boxes', selected_boxes, ...
+    'dbg_matched', dbg_matched, ...
+    'dbg_unmatched', dbg_unmatched, ...
+    'dbg_cam_only', dbg_cam_only, ...
+    'MATCHED', MATCHED, ...
+    'LID_UNMATCHED', LID_UNMATCHED, ...
+    'CAM_UNMATCHED', CAM_UNMATCHED, ...
     'debug_frames', debug_frames, ...
     'camera_axes', camera_axes, ...
     'layout', layout ...
 );
 fig.WindowKeyPressFcn = @stepFrame;
 drawFrame(fig.UserData);
+
 
 function stamps = parseLidarStamp(stems)
 stems = strip(string(stems(:)));
@@ -56,6 +60,7 @@ nanoseconds = str2double(extractAfter(stems(rows), 16));
 stamps(rows) = posixtime(whole_seconds) + nanoseconds / 1e9;
 end
 
+
 function frames = matchDebugFrames(lidar_stamp, debug_stamp)
 frames = zeros(size(lidar_stamp));
 debug_rows = find(isfinite(debug_stamp));
@@ -71,6 +76,7 @@ rows = find(matched);
 rows = rows(counts(location(rows)) == 1);
 frames(rows) = first_row(location(rows));
 end
+
 
 function stepFrame(fig, event)
 state = fig.UserData;
@@ -90,6 +96,7 @@ state.frame = frame;
 fig.UserData = state;
 drawFrame(state);
 end
+
 
 function drawFrame(state)
 frame = state.frame;
@@ -118,20 +125,51 @@ for i = 1:numel(state.cam_names)
         imshow(pixels, color_map, 'Parent', ax);
     end
     title(ax, camera_name, 'Interpreter', 'none');
+
     debug_frame = state.debug_frames(frame, i);
     if debug_frame == 0
         continue;
     end
 
-    boxes = state.selected_boxes.(camera_name);
-    drawBoxes(ax, boxes.camera_boxes{debug_frame}, [0 0.8 0.2]);
-    drawBoxes(ax, boxes.lidar_boxes{debug_frame}, [1 0.3 0]);
+    % Matched camera and LiDAR boxes.
+    if state.MATCHED
+        debug = state.dbg_matched.(camera_name);
+        cols = 1:debug.count(debug_frame);
+
+        drawBoxes(ax, selectBoxes(debug.camera_box, debug_frame, cols), [0 0.8 0.2]);
+        drawBoxes(ax, selectBoxes(debug.proj_lid_box, debug_frame, cols), [1 0.3 0]);
+    end
+
+    % Unmatched LiDAR boxes.
+    if state.LID_UNMATCHED
+        debug = state.dbg_unmatched.(camera_name);
+        cols = 1:debug.count(debug_frame);
+
+        drawBoxes(ax, selectBoxes(debug.proj_lid_box, debug_frame, cols), [1 0.3 0]);
+    end
+
+    % Camera-only boxes.
+    if state.CAM_UNMATCHED
+        debug = state.dbg_cam_only.(camera_name);
+        cols = 1:debug.count(debug_frame);
+
+        drawBoxes(ax, selectBoxes(debug.camera_box, debug_frame, cols), [0 0.8 0.2]);
+    end
 end
 end
+
 
 function drawBoxes(ax, boxes, color)
 for i = 1:size(boxes, 1)
     position = boxes(i, :) + [1 1 0 0];
     rectangle(ax, 'Position', position, 'EdgeColor', color, 'LineWidth', 1.5);
 end
+end
+
+
+function boxes = selectBoxes(bbox, frame, cols)
+boxes = [bbox.ul_corner_x(frame, cols).', bbox.ul_corner_y(frame, cols).', ...
+    bbox.width(frame, cols).', bbox.height(frame, cols).'];
+valid = all(isfinite(boxes), 2) & all(boxes(:, 3:4) > 0, 2);
+boxes = boxes(valid, :);
 end
