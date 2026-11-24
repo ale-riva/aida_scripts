@@ -151,6 +151,7 @@ end
 
 % Extract selected classes
 multimod_det = filter_det_by_class(multimod_det, VIS_CLASSES);
+cam_det = filter_cam_det_by_class(cam_det, VIS_CLASSES);
 
 % proposal fusion debug 
 prop_debug = struct();
@@ -158,7 +159,7 @@ for i=1:numel(cam_names)
     prop_debug.(cam_names{i}) = load_proposal_debug(log, cam_names{i});
 end
 [matched_det, unmatched_det,...
-    dbg_matched, dbg_unmatched, dbg_cam_only] = get_match_split(prop_debug, multimod_det);
+    dbg_matched, dbg_unmatched, dbg_cam_only] = get_match_split(prop_debug, multimod_det, cam_det);
 
 
 %%

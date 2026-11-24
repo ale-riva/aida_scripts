@@ -1,5 +1,5 @@
 function [matched, unmatched, dbg_matched, dbg_unmatched, dbg_cam_only] = ...
-    get_match_split(prop_debug, det)
+    get_match_split(prop_debug, det, cam_det)
 % GET_MATCH_SPLIT  Split fused detections and proposal fusion debug.
 %   Matched detections have both LiDAR and camera bounding boxes in at
 %   least one camera.
@@ -8,6 +8,9 @@ function [matched, unmatched, dbg_matched, dbg_unmatched, dbg_cam_only] = ...
 %
 %   Proposal debug is split per camera into matched, unmatched with
 %   a valid fused box, and camera-only proposals.
+%
+%   Camera-only proposals are retained only if their corresponding
+%   detection exists in cam_det, matching camera_stamp and camera_box_id.
 
 matched_keep = false(size(det.id));
 unmatched_keep = false(size(det.id));
@@ -63,8 +66,12 @@ for i = 1:numel(camera_names)
             (isfinite(ids) & ismember(ids, unmatched_ids));
     end
 
+    % Retain camera-only proposals associated with filtered camera detections.
+    [debug_cam_only, dbg_cam_only_keep] = ...
+        filterCameraOnly(debug, cam_det.(camera_name), valid_cam_only);
+
     % Preserve common frame indexing across the debug splits.
-    frames = frame_matched | any(valid_cam_only, 2);
+    frames = frame_matched | any(dbg_cam_only_keep, 2);
 
     dbg_matched.(camera_name) = ...
         compactCamera(debug, frames, dbg_matched_keep(frames, :));
@@ -73,7 +80,7 @@ for i = 1:numel(camera_names)
         compactCamera(debug, frames, dbg_unmatched_keep(frames, :));
 
     dbg_cam_only.(camera_name) = ...
-        compactCamera(debug, frames, valid_cam_only(frames, :));
+        compactCamera(debug_cam_only, frames, dbg_cam_only_keep(frames, :));
 end
 
 % Give priority to matched detections across cameras.
@@ -81,6 +88,55 @@ unmatched_keep = unmatched_keep & ~matched_keep;
 
 matched = maskDetections(det, matched_keep);
 unmatched = maskDetections(det, unmatched_keep);
+end
+
+
+function [out, keep] = filterCameraOnly(debug, cam_det, valid)
+% Retain camera-only proposals associated with existing camera detections.
+
+out = debug;
+keep = false(size(valid));
+source_idx = zeros(size(valid));
+
+% Match camera frame timestamps.
+[frame_matched, cam_frame] = ...
+    ismember(debug.camera_stamp(:), cam_det.stamp(:));
+
+frame_matched = frame_matched & isfinite(debug.camera_stamp(:));
+
+% Process only frames containing camera-only proposals.
+for frame = find(frame_matched & any(valid, 2)).'
+    row = cam_frame(frame);
+    ids = cam_det.id(row, :);
+
+    cols = find(valid(frame, :));
+
+    % Match camera bounding box IDs within the corresponding frame.
+    [retained, cam_cols] = ...
+        ismember(debug.camera_box_id(frame, cols), ids);
+
+    cols = cols(retained);
+    cam_cols = cam_cols(retained);
+
+    keep(frame, cols) = true;
+
+    % Store linear indices of the corresponding camera detections.
+    source_idx(frame, cols) = ...
+        row + (cam_cols - 1) * size(cam_det.id, 1);
+end
+
+% Recover bounding box coordinates from the source camera detections.
+box_fields = fieldnames(debug.camera_box);
+for i = 1:numel(box_fields)
+    field = box_fields{i};
+
+    if ~isfield(cam_det.bbox, field)
+        continue;
+    end
+
+    out.camera_box.(field)(keep) = ...
+        cam_det.bbox.(field)(source_idx(keep));
+end
 end
 
 
