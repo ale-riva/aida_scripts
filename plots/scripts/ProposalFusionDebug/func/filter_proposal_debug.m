@@ -1,6 +1,6 @@
 function filtered = filter_proposal_debug(prop_debug, det)
-% FILTER_PROPOSAL_DEBUG  Keep overlays for retained LiDAR IDs and camera-only rows.
-%   det.stamp and det.id must come from the original LiDAR detections.
+% FILTER_PROPOSAL_DEBUG  Keep overlays for retained fused IDs and camera-only rows.
+%   det.stamp and det.id must come from the fused detections.
 %   Filtered IDs may have NaN gaps. IDs are matched within the LiDAR frame.
 
 filtered = prop_debug;
@@ -12,7 +12,7 @@ for i = 1:numel(camera_names)
     frame_matched = frame_matched & isfinite(debug.lidar_stamp(:));
 
     valid = (1:size(debug.fused_box_id, 2)) <= debug.count(:);
-    camera_only = valid & debug.has_camera_box == 1 & debug.has_lid_box == 0;
+    camera_only = valid & debug.camera_box_id >= 0 & debug.lid_box_id < 0;
     keep = camera_only;
     for frame = find(frame_matched).'
         ids = det.id(det_frame(frame), :);
@@ -41,8 +41,8 @@ shape = [numel(out.count), out.max_det];
 cols = cumsum(keep, 2);
 destination = row + (cols(keep) - 1) * shape(1);
 
-fields = {'has_camera_box', 'camera_considered', 'camera_box_id', ...
-    'camera_index', 'has_lid_box', 'lid_box_id', 'fused_box_id', 'lid_index'};
+fields = {'camera_considered', 'camera_box_id', ...
+    'camera_index', 'lid_box_id', 'fused_box_id', 'lid_index'};
 for i = 1:numel(fields)
     field = fields{i};
     out.(field) = compactField(debug.(field), frames, keep, destination, shape);

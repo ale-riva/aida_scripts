@@ -8,9 +8,9 @@ for i = 1:numel(camera_names)
     camera_name = camera_names{i};
     debug = prop_debug.(camera_name);
 
-    valid = (1:size(debug.has_camera_box, 2)) <= debug.count(:);
-    has_camera = debug.has_camera_box == 1;
-    has_lidar = debug.has_lid_box == 1;
+    valid = (1:size(debug.camera_box_id, 2)) <= debug.count(:);
+    has_camera = debug.camera_box_id >= 0;
+    has_lidar = debug.lid_box_id >= 0;
     matched = has_camera & has_lidar;
     keep_camera = valid & ((MATCHED & matched) | (CAM_UNMATCHED & has_camera & ~has_lidar));
     keep_lidar = valid & ((MATCHED & matched) | (LID_UNMATCHED & has_lidar & ~has_camera));
