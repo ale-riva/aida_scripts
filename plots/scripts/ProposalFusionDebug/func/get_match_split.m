@@ -1,4 +1,4 @@
-function [matched, unmatched, dbg_matched, dbg_unmatched, dbg_cam_only] = ...
+function [matched, unmatched, dbg_matched_camera, dbg_matched_lidar, dbg_unmatched, dbg_cam_only] = ...
     get_match_split(prop_debug, det, cam_det)
 % GET_MATCH_SPLIT  Split fused detections and proposal fusion debug.
 %   Matched detections have both LiDAR and camera bounding boxes in at
@@ -7,7 +7,9 @@ function [matched, unmatched, dbg_matched, dbg_unmatched, dbg_cam_only] = ...
 %   Detections are associated by lidar_stamp and fused_box_id.
 %
 %   Proposal debug is split per camera into matched, unmatched with
-%   a valid fused box, and camera-only proposals.
+%   a valid fused box, and camera-only proposals. Each debug output has
+%   the cam_det schema, with stamp set to the LiDAR overlay timestamp.
+%   Matched camera boxes and LiDAR projections share the same row and slot.
 %
 %   Camera-only proposals are retained only if their corresponding
 %   detection exists in cam_det, matching camera_stamp and camera_box_id.
@@ -15,7 +17,8 @@ function [matched, unmatched, dbg_matched, dbg_unmatched, dbg_cam_only] = ...
 matched_keep = false(size(det.id));
 unmatched_keep = false(size(det.id));
 
-dbg_matched = struct();
+dbg_matched_camera = struct();
+dbg_matched_lidar = struct();
 dbg_unmatched = struct();
 dbg_cam_only = struct();
 
@@ -73,14 +76,21 @@ for i = 1:numel(camera_names)
     % Preserve common frame indexing across the debug splits.
     frames = frame_matched | any(dbg_cam_only_keep, 2);
 
-    dbg_matched.(camera_name) = ...
-        compactCamera(debug, frames, dbg_matched_keep(frames, :));
+    dbg_matched_camera.(camera_name) = compactCamera( ...
+        debug.lidar_stamp, debug.camera_box, debug.camera_box_id, ...
+        frames, dbg_matched_keep(frames, :));
 
-    dbg_unmatched.(camera_name) = ...
-        compactCamera(debug, frames, dbg_unmatched_keep(frames, :));
+    dbg_matched_lidar.(camera_name) = compactCamera( ...
+        debug.lidar_stamp, debug.proj_lid_box, debug.lid_box_id, ...
+        frames, dbg_matched_keep(frames, :));
 
-    dbg_cam_only.(camera_name) = ...
-        compactCamera(debug_cam_only, frames, dbg_cam_only_keep(frames, :));
+    dbg_unmatched.(camera_name) = compactCamera( ...
+        debug.lidar_stamp, debug.proj_lid_box, debug.lid_box_id, ...
+        frames, dbg_unmatched_keep(frames, :));
+
+    dbg_cam_only.(camera_name) = compactCamera( ...
+        debug.lidar_stamp, debug_cam_only.camera_box, debug.camera_box_id, ...
+        frames, dbg_cam_only_keep(frames, :));
 end
 
 % Give priority to matched detections across cameras.
@@ -169,47 +179,34 @@ out.max_det = max([1; out.count]);
 end
 
 
-function out = compactCamera(debug, frames, keep)
-out = debug;
-
-out.camera_stamp = debug.camera_stamp(frames);
-out.lidar_stamp = debug.lidar_stamp(frames);
-
-if ~isscalar(debug.cam_id) && numel(debug.cam_id) == numel(frames)
-    out.cam_id = debug.cam_id(frames);
-end
-
-out.count = sum(keep, 2);
-out.max_det = max([1; out.count]);
-
-shape = [numel(out.count), out.max_det];
+function out = compactCamera(stamps, bbox, ids, frames, keep)
+count = sum(keep, 2);
+max_det = max([1; count]);
+shape = [numel(count), max_det];
 
 [row, ~] = find(keep);
 cols = cumsum(keep, 2);
 destination = row + (cols(keep) - 1) * shape(1);
 
-fields = {'camera_considered', 'camera_box_id', ...
-    'camera_index', 'lid_box_id', 'fused_box_id', 'lid_index'};
+out = struct( ...
+    'stamp', stamps(frames), ...
+    'frame_id', "", ...
+    'bbox', struct(), ...
+    'id', compactField(ids, frames, keep, destination, shape), ...
+    'class', NaN(shape), ...
+    'class_name', strings(shape), ...
+    'score', NaN(shape), ...
+    'sensor_type', NaN(shape), ...
+    'img_width', NaN(shape(1), 1), ...
+    'img_height', NaN(shape(1), 1), ...
+    'is_valid', NaN(shape(1), 1), ...
+    'count', count, ...
+    'max_det', max_det);
 
-for i = 1:numel(fields)
-    field = fields{i};
-    out.(field) = compactField(debug.(field), ...
-        frames, keep, destination, shape);
-end
-
-box_fields = fieldnames(debug.camera_box);
+box_fields = fieldnames(bbox);
 for i = 1:numel(box_fields)
     field = box_fields{i};
-
-    out.camera_box.(field) = compactField(debug.camera_box.(field), ...
-        frames, keep, destination, shape);
-end
-
-box_fields = fieldnames(debug.proj_lid_box);
-for i = 1:numel(box_fields)
-    field = box_fields{i};
-
-    out.proj_lid_box.(field) = compactField(debug.proj_lid_box.(field), ...
+    out.bbox.(field) = compactField(bbox.(field), ...
         frames, keep, destination, shape);
 end
 end

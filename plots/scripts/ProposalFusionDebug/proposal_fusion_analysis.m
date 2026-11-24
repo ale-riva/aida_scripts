@@ -6,9 +6,6 @@ use_manual_annotation               = true;
 keep_only_annotated_frames          = true;
 
 VIS_CAM = ["left","front","right"];
-MATCHED = true;
-LID_UNMATCHED = false;
-CAM_UNMATCHED = false;
 
 VEHICLE = "serravalle_niguarda";
 
@@ -159,13 +156,28 @@ for i=1:numel(cam_names)
     prop_debug.(cam_names{i}) = load_proposal_debug(log, cam_names{i});
 end
 [matched_det, unmatched_det,...
-    dbg_matched, dbg_unmatched, dbg_cam_only] = get_match_split(prop_debug, multimod_det, cam_det);
+    dbg_matched_camera, dbg_matched_lidar, dbg_unmatched, dbg_cam_only] = get_match_split(prop_debug, multimod_det, cam_det);
 
 
 %%
 runs = {
     struct('s', matched_det, 'name', 'matched', 'ego', ego, 'col', col.det),...
     struct('s', unmatched_det, 'name', 'UNmatched', 'ego', ego, 'col', col.det2),...
+};
+
+% Matched detections
+camera_box_color_match   = [0.4 0.8 1.0];  % Light blue
+lidar_box_color_match    = [1.0 0.6 0.0];  % Orange
+
+% Unmatched detections
+camera_box_color_unmatch = [0.0 0.3 1.0];  % Blue
+lidar_box_color_unmatch  = [1.0 0.1 0.2];  % Red
+
+bbox_vis = {
+    struct('s', cam_det, 'col', camera_box_color_unmatch), ...
+    struct('s', dbg_matched_camera, 'col', camera_box_color_match), ...
+    struct('s', dbg_matched_lidar, 'col', lidar_box_color_match), ...
+    struct('s', dbg_unmatched, 'col', lidar_box_color_unmatch), ...
 };
 
 
